@@ -1,0 +1,5 @@
+services:
+  a:
+    build: .
+  b:
+    build: .
