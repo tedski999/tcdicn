@@ -2,18 +2,24 @@ import asyncio
 import json
 import logging
 import socket
+import time
 from asyncio import DatagramTransport, StreamWriter, StreamReader, Task
 from typing import Tuple, Dict
+
+
+VERSION = "0.1"
+
 
 class Server:
 
     # Initialise server
-    def __init__(self, port: int, announcement: bytes, announcement_interval: int, peer_timeout_interval: int):
+    def __init__(self, port: int,  announcement_interval: int, peer_timeout_interval: int):
         self.port = port  # Port number to listen on and send requests to
-        self.announcement = announcement  # Bytes to send as announcement
+        self.announcement = self._create_announcement_msg()  # Bytes to send as announcement
         self.announcement_interval = announcement_interval  # Seconds between each announcement
         self.peer_timeout_interval = peer_timeout_interval  # Seconds without announcement until a peer is forgotten
         self.peers: Dict[Tuple[str, int], Task] = dict()  # Cache of peers whose announcement we have recently heard
+        self.dataset = dict()  # Local named data cache
 
     # Start server
     async def start(self):
@@ -27,11 +33,12 @@ class Server:
 
     # Retrieve named data from the ICN network
     async def get(self, name: str):
-        return "TODO"
+        return self.dataset[name]["value"] if name in self.dataset else "unknown"
 
     # Publish named data to the ICN network
     async def set(self, name: str, value: str):
-        return "TODO"
+        self.dataset[name] = { "value": value, "time": time.time() }
+        await self._send_to_peers(self._create_set_msg(name))
 
     # Listen for and regularly broadcast peer announcements to let other nodes know we exist
     async def _start_udp_server(self):
@@ -86,7 +93,53 @@ class Server:
         server = await asyncio.start_server(self._on_tcp_connection, None, self.port)
         await server.serve_forever()
 
-    # Handle peer connection TODO
+    # Handle peer connection
     async def _on_tcp_connection(self, reader: StreamReader, writer: StreamWriter):
-        logging.info("Handling new TCP connection...")
-        writer.close()
+        logging.debug("Handling new TCP connection...")
+        # Read entire message
+        msg_bytes = await reader.read()
+        msg = json.loads(msg_bytes)
+        # Ignore invalid messages
+        if msg["version"] != VERSION or msg["type"] != "set":
+            return
+        # Extract name and data
+        name = msg["name"]
+        data = { "value": msg["value"], "time": msg["time"] }
+        # Ignore duplicate messages
+        if name in self.dataset and data["time"] == self.dataset[name]["time"]:
+            return
+        # Insert new data into data
+        self.dataset[name] = data
+        # Tell other peers
+        await self._send_to_peers(msg_bytes)
+
+    # Send bytes over TCP to every known peer
+    async def _send_to_peers(self, msg_bytes: bytes):
+        async def send(host, port):
+            logging.debug(f"Sending message to {host}:{port}...")
+            reader, writer = await asyncio.open_connection(host, port)
+            writer.write(msg_bytes)
+            writer.close()
+        aws = [ asyncio.create_task(send(*addr)) for addr in self.peers.keys() ]
+        if len(aws) != 0:
+            _, pending = await asyncio.wait(aws, timeout=10)
+            if len(pending) != 0:
+                [ task.cancel() for task in pending ]
+                await asyncio.wait(pending)
+
+    # Construct well-formatted "announcement" message bytes
+    def _create_announcement_msg(self):
+        return json.dumps({
+            "version": VERSION,
+            "type": "announcement"
+        }).encode()
+
+    # Construct well-formatted "set" message bytes for data
+    def _create_set_msg(self, name: str):
+        return json.dumps({
+            "version": VERSION,
+            "type": "set",
+            "name": name,
+            "value": self.dataset[name]["value"],
+            "time": self.dataset[name]["time"]
+        }).encode()

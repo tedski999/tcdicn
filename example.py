@@ -6,7 +6,6 @@ import signal
 import tcdicn
 
 PORT = 33333
-ANNOUNCEMENT = json.dumps({"version": "0.1", "type": "announcement"}).encode()
 ANNOUNCEMENT_INTERVAL = 10
 PEER_TIMEOUT_INTERVAL = 30
 
@@ -23,25 +22,24 @@ async def scenario(server):
         else:
             logging.info(f"Getting {name}...")
             value = await server.get(name)
-        logging.info(f"{name} is {value}")
+            logging.info(f"{name} is {value}")
 
 
 async def main():
     # Debug logging verbosity
-    logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logging.DEBUG)
+    logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logging.INFO)
     # Initialise server
-    server = tcdicn.Server(PORT, ANNOUNCEMENT, ANNOUNCEMENT_INTERVAL, PEER_TIMEOUT_INTERVAL)
+    server = tcdicn.Server(PORT, ANNOUNCEMENT_INTERVAL, PEER_TIMEOUT_INTERVAL)
     # Shutdown the ICN server if we receive any UNIX signals
     for sig in (signal.SIGHUP, signal.SIGTERM, signal.SIGINT):
         asyncio.get_running_loop().add_signal_handler(sig, lambda: server_task.cancel())
     # Run until one of the tasks complete
     server_task = asyncio.create_task(server.start())
     scenario_task = asyncio.create_task(scenario(server))
-    _, tasks = await asyncio.wait([server_task, scenario_task], return_when=asyncio.FIRST_COMPLETED)
+    _, pending = await asyncio.wait([server_task, scenario_task], return_when=asyncio.FIRST_COMPLETED)
     # Cancel any remaining tasks
-    for task in tasks:
-        task.cancel()
-    await asyncio.wait(tasks)
+    [ task.cancel() for task in pending ]
+    await asyncio.wait(pending)
 
 
 if __name__ == "__main__":
