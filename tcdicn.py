@@ -1,17 +1,9 @@
 import asyncio
 import json
 import logging
-import signal
 import socket
 from asyncio import DatagramTransport, StreamWriter, StreamReader, Task
 from typing import Tuple, Dict
-
-# Default values - You should probably use these if you want to be compatible with other nodes!
-PORT = 33333
-ANNOUNCEMENT = json.dumps({"version": "0.1", "type": "announcement"}).encode()
-ANNOUNCEMENT_INTERVAL = 10
-PEER_TIMEOUT_INTERVAL = 30
-
 
 class Server:
 
@@ -98,22 +90,3 @@ class Server:
     async def _on_tcp_connection(self, reader: StreamReader, writer: StreamWriter):
         logging.info("Handling new TCP connection...")
         writer.close()
-
-
-# Example of how to use the ICN server
-async def main():
-    # Debug logging verbosity
-    logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logging.DEBUG)
-    # Initialise server
-    server = Server(PORT, ANNOUNCEMENT, ANNOUNCEMENT_INTERVAL, PEER_TIMEOUT_INTERVAL)
-    server_task = asyncio.create_task(server.start())
-    # Shutdown the ICN server if we receive any UNIX signals
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGHUP, signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(sig, lambda: server_task.cancel())
-    # Start running server
-    await server_task
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
