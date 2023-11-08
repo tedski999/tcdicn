@@ -2,8 +2,10 @@ import asyncio
 import logging
 import random
 import signal
+import sys
 import tcdicn
 
+# Default values
 PORT = 33333
 ANNOUNCE_INTERVAL = 60
 PEER_TIMEOUT = 180
@@ -25,11 +27,15 @@ async def scenario(server: tcdicn.Server):
 
 
 async def main():
+    # Parse CLI arguments
+    port = sys.argv[1] if len(sys.argv) > 1 else PORT
+    announce_interval = sys.argv[2] if len(sys.argv) > 2 else ANNOUNCE_INTERVAL
+    peer_timeout = sys.argv[3] if len(sys.argv) > 3 else PEER_TIMEOUT
     # Debug logging verbosity
     logging_format = "%(asctime)s [%(levelname)s] %(message)s"
     logging.basicConfig(format=logging_format, level=logging.INFO)
     # Initialise server
-    server = tcdicn.Server(PORT, ANNOUNCE_INTERVAL, PEER_TIMEOUT)
+    server = tcdicn.Server(port, announce_interval, peer_timeout)
     # Shutdown the ICN server if we receive any UNIX signals
     loop = asyncio.get_running_loop()
     sigs = [signal.SIGHUP, signal.SIGTERM, signal.SIGINT]
