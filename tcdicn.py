@@ -10,6 +10,7 @@ from typing import Tuple, Dict
 VERSION = "0.1"
 
 
+# Utility class for storing the address (host and port number) of peers in a useful structure
 class _Address:
 
     def __init__(self, host, port):
@@ -26,6 +27,7 @@ class _Address:
         return f"{self.host}:{self.port}"
 
 
+# Provides all the networking logic for interacting with a network of TCD ICN nodes
 class Server:
 
     # Initialise server
@@ -37,7 +39,8 @@ class Server:
         self.peers: Dict[_Address, Task] = dict()  # Cache of peers whose announcement we have recently heard
         self.dataset = dict()  # Local named data cache
 
-    # Start server
+    # Start the server as a coroutine
+    # Cancel the coroutine to shutdown the server gracefully
     async def start(self):
         logging.info(f"Listening on port :{self.port}")
         try:
@@ -48,13 +51,17 @@ class Server:
             logging.warning(f"Server tasks cancelled")
 
     # Retrieve named data from the ICN network
+    # This does not actually do any networking but just looks up what is in the local cache
     async def get(self, name: str):
         return self.dataset[name]["value"] if name in self.dataset else "unknown"
 
     # Publish named data to the ICN network
+    # The data will be pushed to all known peers, who will push to all their known peers, etc...
     async def set(self, name: str, value: str):
         self.dataset[name] = { "value": value, "time": time.time() }
         await self._send_to_addrs(self._create_set_msg(name), self.peers.keys())
+
+    # Methods below here are "private" and should not be used directly by applications
 
     # Listen for and regularly broadcast peer announcements to let other nodes know we exist
     async def _start_udp_server(self):
