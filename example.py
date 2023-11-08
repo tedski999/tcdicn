@@ -6,14 +6,14 @@ import signal
 import tcdicn
 
 PORT = 33333
-ANNOUNCEMENT_INTERVAL = 10
-PEER_TIMEOUT_INTERVAL = 30
+ANNOUNCEMENT_INTERVAL = 60
+PEER_TIMEOUT_INTERVAL = 180
 
 
 # Example scenario to randomly get and set named data
 async def scenario(server):
     while True:
-        await asyncio.sleep(random.uniform(5, 30))
+        await asyncio.sleep(random.uniform(30, 180))
         name = random.choice(["foo", "bar", "baz"])
         if random.choice([True, False]):
             value = random.choice(range(0, 10))
