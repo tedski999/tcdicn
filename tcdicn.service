@@ -1,0 +1,10 @@
+[Unit]
+Description=TCDICN Server
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /users/ugrad/edjohnso/tcdicn/example-server.py
+WorkingDirectory=/users/ugrad/edjohnso/tcdicn
+
+[Install]
+WantedBy=default.target
