@@ -329,6 +329,7 @@ class Server:
         elif msg["type"] == "set":
             await self._process_set_msg(peer, msg)
 
+        """
         # TODO(optimisation): incorporate ttp into batching responses
         # TODO(optimisation): precompute and memorise a lot of this
         # For now, immediately respond if we can
@@ -347,6 +348,7 @@ class Server:
                                 logging.error(f"Error publishing data: {e}")
                         else:
                             logging.warning("Unable to do the thing 2")
+        """
 
     async def _process_get_msg(self, peer: _PeerId, msg):
         ttp = msg["ttp"]  # TODO(optimisation): batching responses
@@ -370,6 +372,7 @@ class Server:
                 or (last_time == self.clients[client].interests[tag].time
                     and eol > self.clients[client].interests[tag].eol):
             self.clients[client].interests[tag] = _InterestInfo(eol, last_time)
+            """
             # TODO: eol timer tasks
             # TODO: push new gets towards publishers if eol is greater than
             # current max. For now, always push it
@@ -385,6 +388,7 @@ class Server:
                             logging.error(f"Error sending interest: {e}")
                     else:
                         logging.warning("Unable to do the thing")
+            """
 
     async def _process_set_msg(self, peer: _PeerId, msg):
         tag = msg["tag"]
@@ -397,6 +401,13 @@ class Server:
 
         logging.info(f"Received update from {peer}: {tag}={value}@{new_time}")
         self.content[tag] = _TagInfo(value, new_time)
+
+        # TODO(v0.2): remove gossiping once routing is finished
+        for peer in self.peers:
+            try:
+                await _send_set_msg(peer, tag, value, new_time)
+            except OSError as e:
+                logging.error(f"Error publishing value: {e}")
 
     # Compute the best peer to go via to get to client based on known scores
     def _get_best_peer_to_client(self, client: _ClientId):
@@ -463,16 +474,20 @@ class Client:
         last_time = self.content[tag].time if tag in self.content else 0
 
         # Keep trying until either success or this coroutine is cancelled
-        while not self.pending_interests[tag].done():
-            logging.debug(f"Sending new interest for {tag}...")
-            try:
-                await _send_get_msg(
-                    self.server, ttp, time.time() + ttl,
-                    tag, last_time, self.id)
-            except OSError as e:
-                logging.error(f"Error sending interest: {e}")
-            await asyncio.sleep(ttl / tpf)
-        return await self.pending_interests[tag]
+        async def subscribe():
+            while not self.pending_interests[tag].done():
+                logging.debug(f"Sending new interest for {tag}...")
+                try:
+                    await _send_get_msg(
+                        self.server, ttp, time.time() + ttl,
+                        tag, last_time, self.id)
+                except OSError as e:
+                    logging.error(f"Error sending interest: {e}")
+                await asyncio.sleep(ttl / tpf)
+        task = asyncio.create_task(subscribe())
+        value = await self.pending_interests[tag]
+        task.cancel()
+        return value
 
     # Publishes a new value to a tag
     # This will only be propagated towards interested clients
@@ -534,6 +549,6 @@ class Client:
 
         # Fulfill associated pending interest
         if tag in self.pending_interests:
-            self.pending_interests[tag].set_future(value)
+            self.pending_interests[tag].set_result(value)
             del self.pending_interests[tag]
-            logging.debug(f"Fulfilled local interest in {tag} @ {new_time}")
+            logging.info(f"Fulfilled local interest in {tag} @ {new_time}")

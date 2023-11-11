@@ -25,11 +25,12 @@ async def main():
     # Logging verbosity
     logging.basicConfig(
         format="%(asctime)s.%(msecs)04d [%(levelname)s] %(message)s",
-        level=logging.DEBUG, datefmt="%H:%M:%S:%m")
+        level=logging.INFO, datefmt="%H:%M:%S:%m")
 
     # Pick a random subset of tags to subscribe to
     tags = ["foo", "bar", "baz", "qux", "quux"]
-    tags = random.sample(tags, random.randint(2, 4))
+    tags = random.sample(tags, random.randint(1, 3))
+    tags.append("always")
 
     # Start the client as a background task
     logging.info("Starting client...")
@@ -40,19 +41,20 @@ async def main():
 
     # Subscribe to random subset of data
     async def run_actuator():
-        tasks = []
+        tasks = set()
 
         def subscribe(tag):
             getter = client.get(tag, get_ttl, get_tpf, get_ttp)
             task = asyncio.create_task(getter, name=tag)
-            tasks.append(task)
+            tasks.add(task)
 
         for tag in tags:
             logging.info(f"Subscribing to {tag}...")
             subscribe(tag)
 
         while True:
-            done, tasks = await asyncio.wait(tasks)
+            done, tasks = await asyncio.wait(
+                tasks, return_when=asyncio.FIRST_COMPLETED)
             for task in done:
                 tag = task.get_name()
                 value = task.result()

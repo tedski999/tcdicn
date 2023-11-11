@@ -22,11 +22,12 @@ async def main():
     # Logging verbosity
     logging.basicConfig(
         format="%(asctime)s.%(msecs)04d [%(levelname)s] %(message)s",
-        level=logging.DEBUG, datefmt="%H:%M:%S:%m")
+        level=logging.INFO, datefmt="%H:%M:%S:%m")
 
     # Pick a random subset of tags to publish to
     tags = ["foo", "bar", "baz", "qux", "quux"]
-    tags = random.sample(tags, random.randint(2, 4))
+    tags = random.sample(tags, random.randint(1, 3))
+    tags.append("always")
 
     # Start the client as a background task
     logging.info("Starting client...")

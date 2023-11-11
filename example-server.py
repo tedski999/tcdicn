@@ -18,7 +18,7 @@ async def main():
     # Logging verbosity
     logging.basicConfig(
         format="%(asctime)s.%(msecs)04d [%(levelname)s] %(message)s",
-        level=logging.DEBUG, datefmt="%H:%M:%S:%m")
+        level=logging.INFO, datefmt="%H:%M:%S:%m")
 
     # Start the server as a background task
     logging.info("Starting server...")
