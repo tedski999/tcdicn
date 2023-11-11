@@ -1,10 +1,14 @@
 import asyncio
 import logging
 import os
+import random
 import tcdicn
 
 
 async def main():
+
+    # Stagger starting ICN servers
+    await asyncio.sleep(random.uniform(0, 5))
 
     # Get parameters or defaults
     port = int(os.environ.get("PORT", 33333))
@@ -12,8 +16,9 @@ async def main():
     net_tpf = int(os.environ.get("NET_TPF", 3))
 
     # Logging verbosity
-    logging_format = "%(asctime)s [%(levelname)s] %(message)s"
-    logging.basicConfig(format=logging_format, level=logging.DEBUG)
+    logging.basicConfig(
+        format="%(asctime)s.%(msecs)04d [%(levelname)s] %(message)s",
+        level=logging.DEBUG, datefmt="%H:%M:%S:%m")
 
     # Start the server as a background task
     logging.info("Starting server...")

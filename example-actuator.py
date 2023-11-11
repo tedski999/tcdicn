@@ -8,7 +8,7 @@ import tcdicn
 async def main():
 
     # Allow the ICN server to start before attempting to use it
-    await asyncio.sleep(3)
+    await asyncio.sleep(random.uniform(5, 8))
 
     # Get parameters or defaults
     id = os.environ.get("ID", "my_cool_actuator")
@@ -23,12 +23,13 @@ async def main():
     get_ttp = float(os.environ.get("GET_TTP", 0))
 
     # Logging verbosity
-    logging_format = "%(asctime)s [%(levelname)s] %(message)s"
-    logging.basicConfig(format=logging_format, level=logging.DEBUG)
+    logging.basicConfig(
+        format="%(asctime)s.%(msecs)04d [%(levelname)s] %(message)s",
+        level=logging.DEBUG, datefmt="%H:%M:%S:%m")
 
     # Pick a random subset of tags to subscribe to
     tags = ["foo", "bar", "baz", "qux", "quux"]
-    tags = random.sample(tags, random.randint(1, 3))
+    tags = random.sample(tags, random.randint(2, 4))
 
     # Start the client as a background task
     logging.info("Starting client...")

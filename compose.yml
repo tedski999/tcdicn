@@ -5,7 +5,7 @@ services:
   server:
     build: .
     deploy:
-      replicas: 3
+      replicas: 2
     environment:
       - SCRIPT=example-server.py
       - PORT=33333
@@ -30,7 +30,7 @@ services:
       - SCRIPT=example-actuator.py
       - ID=my_cool_actuator
       - PORT=33334
-      - SERVER_HOST=tcdicn-server-3
+      - SERVER_HOST=tcdicn-server-4
       - SERVER_PORT=33333
       - NET_TTL=90
       - NET_TPF=18

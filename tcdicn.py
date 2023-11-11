@@ -81,17 +81,6 @@ class _PeerInfo:
         self.routes: Dict[_ClientId, _Score] = dict()  # See _Score
 
 
-# Routing information about a client from a peer UDP broadcast
-class _ClientAdvert:
-    def __init__(
-            self, ttp: float, eol: float,
-            tags: List[_Tag], score: _Score):
-        self.ttp = ttp
-        self.eol = eol
-        self.tags = tags
-        self.score = score
-
-
 # Utility function for setting up UDP transport and handling datagrams
 # Necessary because asyncio does not provide the construct as it does with TCP
 async def _start_udp_transport(callback, host: str, port: int):
@@ -140,7 +129,7 @@ async def _send_advert_msg(
 # the shortest route as defined by the _ClientInfo.tags and _PeerInfo.routes
 async def _send_get_msg(
         peer: _PeerId, ttp: float, eol: float,
-        tag: _Tag, time: float, id: _ClientId):
+        tag: _Tag, last_time: float, id: _ClientId):
     _, writer = await asyncio.open_connection(peer.host, peer.port)
     writer.write(json.dumps({
         "version": VERSION,
@@ -148,7 +137,7 @@ async def _send_get_msg(
         "ttp": ttp,
         "eol": eol,
         "tag": tag,
-        "time": time,
+        "time": last_time,
         "client": id
     }).encode())
     await writer.drain()
@@ -158,14 +147,14 @@ async def _send_get_msg(
 # Push published value for tag with a given time to some peer address
 # This should be pushed back towards all relevant subscribers along the
 # shortest routes as defined by the _ClientInfo.interests and _PeerInfo.routes
-async def _send_set_msg(peer: _PeerId, tag: _Tag, value: str, time: float):
+async def _send_set_msg(peer: _PeerId, tag: _Tag, value: str, new_time: float):
     _, writer = await asyncio.open_connection(peer.host, peer.port)
     writer.write(json.dumps({
         "version": VERSION,
         "type": "set",
         "tag": tag,
         "value": value,
-        "time": time
+        "time": new_time
     }).encode())
     await writer.drain()
     writer.close()
@@ -217,14 +206,21 @@ class Server:
                 # TODO(optimisation): this should be done elsewhere
                 peer = self._get_best_peer_to_client(client)
                 max_score = self.peers[peer].routes[client]
-                clients[client] = _ClientAdvert(
-                    info.ttp, info.eol, info.tags, max_score - 1)
+                clients[client] = {
+                    "ttp": info.ttp,
+                    "eol": info.eol,
+                    "tags": info.tags,
+                    "score": max_score - 1
+                }
                 info.ttp = None
 
             # Broadcast our advertisement
             addr = _PeerId("<broadcast>", self.port)
             eol = time.time() + self.net_ttl
-            await _send_advert_msg(addr, udp, eol, clients)
+            try:
+                await _send_advert_msg(addr, udp, eol, clients)
+            except OSError as e:
+                logging.error(f"Error broadcasting advert: {e}")
 
             # Repeat a number of times before our TTL can run out
             await asyncio.sleep(self.net_ttl / self.net_tpf)
@@ -241,12 +237,17 @@ class Server:
         eol = msg["eol"]
         clients = dict()
         for client, ad in msg["clients"].items():
-            clients[client] = _ClientAdvert(
-                ad["ttp"], ad["eof"], ad["tags"], ad["score"])
+            clients[client] = {
+                "ttp": ad["ttp"],
+                "eol": ad["eol"],
+                "tags": ad["tags"],
+                "score": ad["score"]
+            }
 
         # Update clients
         for client, ad in clients.items():
-            if client in self.clients and ad.eol <= self.clients[client].eol:
+            if client in self.clients \
+                    and ad["eol"] <= self.clients[client].eol:
                 continue  # Ignore old client adverts caused by loops
             self._update_client(client, ad)
 
@@ -255,11 +256,11 @@ class Server:
 
         # Update routes to client via peer scores
         for client, ad in clients.items():
-            self.peers[peer].routes[client] = ad.score
-            logging.debug(f"Set {client} via {peer} score: {ad.score}")
+            self.peers[peer].routes[client] = ad["score"]
+            logging.debug(f"Set {client} via {peer} score: {ad['score']}")
 
     # Process a new client advertisement from a peer UDP broadcast
-    def _update_client(self, client: _ClientId, ad: _ClientAdvert):
+    def _update_client(self, client: _ClientId, ad: dict):
 
         # Cancel previous client expiry timer
         if client in self.clients:
@@ -270,10 +271,10 @@ class Server:
             logging.info(f"Added new client: {client}")
 
         # Update client
-        self.clients[client].ttp = ad.ttp
-        self.clients[client].eol = ad.eol
-        self.clients[client].tags = ad.tags
-        logging.info(f"Set {client} tags: {ad.tags}")
+        self.clients[client].ttp = ad["ttp"]
+        self.clients[client].eol = ad["eol"]
+        self.clients[client].tags = ad["tags"]
+        logging.info(f"Set {client} tags: {ad['tags']}")
 
         # Insert client into clients table
         async def _do_timeout():
@@ -324,9 +325,9 @@ class Server:
             logging.warning(f"Received bad message from {peer}; ignoring.")
             return
         if msg["type"] == "get":
-            self._process_get_msg(peer, msg)
+            await self._process_get_msg(peer, msg)
         elif msg["type"] == "set":
-            self._process_set_msg(peer, msg)
+            await self._process_set_msg(peer, msg)
 
         # TODO(optimisation): incorporate ttp into batching responses
         # TODO(optimisation): precompute and memorise a lot of this
@@ -336,21 +337,24 @@ class Server:
                 for tag, tag_info in self.content.items():
                     if interest == tag and tag_info.time > interest_info.time:
                         # TODO: handle failure
-                        logging.debug("Pushing set {tag} towards {client}")
+                        logging.debug(f"Pushing set {tag} towards {client}")
                         peer = self._get_best_peer_to_client(client)
                         if peer:
-                            await _send_set_msg(
-                                peer, tag, tag_info.value, tag_info.time)
+                            try:
+                                await _send_set_msg(
+                                    peer, tag, tag_info.value, tag_info.time)
+                            except OSError as e:
+                                logging.error(f"Error publishing data: {e}")
                         else:
                             logging.warning("Unable to do the thing 2")
 
-    def _process_get_msg(self, peer: _PeerId, msg):
+    async def _process_get_msg(self, peer: _PeerId, msg):
         ttp = msg["ttp"]  # TODO(optimisation): batching responses
         eol = msg["eol"]
         tag = msg["tag"]
-        time = msg["time"]
+        last_time = msg["time"]
         client = msg["client"]
-        logging.debug(f"Received get from {peer}: {tag}>{time} ~ {client}")
+        logging.debug(f"Received get from {peer}: {tag}>{last_time} @{client}")
 
         # We don't (yet) know this client, so create a placeholder for now
         if client not in self.clients:
@@ -362,34 +366,37 @@ class Server:
 
         # Update interest if newer time or later eol is received
         if tag not in self.clients[client].interests \
-                or time > self.clients[client].interests[tag].time \
-                or (time == self.clients[client].interests[tag].time
+                or last_time > self.clients[client].interests[tag].time \
+                or (last_time == self.clients[client].interests[tag].time
                     and eol > self.clients[client].interests[tag].eol):
-            self.clients[client].interests[tag] = _InterestInfo(eol, time)
+            self.clients[client].interests[tag] = _InterestInfo(eol, last_time)
             # TODO: eol timer tasks
             # TODO: push new gets towards publishers if eol is greater than
             # current max. For now, always push it
             for client, client_info in self.clients.items():
                 if tag in client_info.tags:
-                    logging.debug("Pushing get {tag} towards {client}")
+                    logging.debug(f"Pushing get {tag} towards {client}")
                     peer = self._get_best_peer_to_client(client)
                     if peer:
-                        await _send_get_msg(
-                            peer, ttp, eol, tag, time, client)
+                        try:
+                            await _send_get_msg(
+                                peer, ttp, eol, tag, last_time, client)
+                        except OSError as e:
+                            logging.error(f"Error sending interest: {e}")
                     else:
                         logging.warning("Unable to do the thing")
 
-    def _process_set_msg(self, peer: _PeerId, msg):
+    async def _process_set_msg(self, peer: _PeerId, msg):
         tag = msg["tag"]
         value = msg["value"]
-        time = msg["time"]
-        logging.debug(f"Received set from {peer}: {tag}={value}@{time}")
+        new_time = msg["time"]
+        logging.debug(f"Received set from {peer}: {tag}={value}@{new_time}")
 
-        if tag in self.content and self.content[tag].time >= time:
+        if tag in self.content and self.content[tag].time >= new_time:
             return  # Ignore old publishes
 
-        logging.info(f"Received update from {peer}: {tag}={value}@{time}")
-        self.content[tag] = _TagInfo(value, time)
+        logging.info(f"Received update from {peer}: {tag}={value}@{new_time}")
+        self.content[tag] = _TagInfo(value, new_time)
 
     # Compute the best peer to go via to get to client based on known scores
     def _get_best_peer_to_client(self, client: _ClientId):
@@ -453,21 +460,27 @@ class Client:
             logging.debug(f"Added new local interest for {tag}.")
 
         # Subscribe to any data with a freshness greater than the last
-        time = self.content[tag].time if tag in self.content else 0
+        last_time = self.content[tag].time if tag in self.content else 0
 
         # Keep trying until either success or this coroutine is cancelled
-        logging.debug(f"Waiting on pending interest for {tag}...")
         while not self.pending_interests[tag].done():
-            await _send_get_msg(
-                self.server, ttp, time.time() + ttl,
-                tag, time, self.id)
-            asyncio.sleep(ttl / tpf)
+            logging.debug(f"Sending new interest for {tag}...")
+            try:
+                await _send_get_msg(
+                    self.server, ttp, time.time() + ttl,
+                    tag, last_time, self.id)
+            except OSError as e:
+                logging.error(f"Error sending interest: {e}")
+            await asyncio.sleep(ttl / tpf)
         return await self.pending_interests[tag]
 
     # Publishes a new value to a tag
     # This will only be propagated towards interested clients
     async def set(self, tag: str, value: str):
-        await _send_set_msg(self.server, tag, value, time.time())
+        try:
+            await _send_set_msg(self.server, tag, value, time.time())
+        except OSError as e:
+            logging.error(f"Error publishing value: {e}")
 
     # Start regularly sending UDP advertisements to the local ICN server to
     # let the rest of the network know this client exists
@@ -475,11 +488,15 @@ class Client:
         logging.debug("Creating UDP server...")
         udp, _ = await _start_udp_transport(self._on_udp_data, None, self.port)
         client = {"ttp": self.net_ttp, "tags": self.tags, "score": 1000}
+        clients = {self.id: client}
         while True:
             logging.debug("Sending advertisement to server...")
             eol = time.time() + self.net_ttl
-            client["eol"] = eol
-            await _send_advert_msg(self.server, udp, eol, {self.id: client})
+            clients[self.id]["eol"] = eol
+            try:
+                await _send_advert_msg(self.server, udp, eol, clients)
+            except OSError as e:
+                logging.error(f"Error broadcasting advert: {e}")
             await asyncio.sleep(self.net_ttl / self.net_tpf)
 
     # Clients should not receive any UDP advertisement as they should not be
@@ -509,14 +526,14 @@ class Client:
             return
         tag = msg["tag"]
         value = msg["value"]
-        time = msg["time"]
+        new_time = msg["time"]
 
         # Update local content store
-        self.content[tag] = _TagInfo(value, time)
-        logging.debug(f"Received set from {peer}: {tag}={value} @ {time}")
+        self.content[tag] = _TagInfo(value, new_time)
+        logging.debug(f"Received set from {peer}: {tag}={value} @ {new_time}")
 
         # Fulfill associated pending interest
         if tag in self.pending_interests:
             self.pending_interests[tag].set_future(value)
             del self.pending_interests[tag]
-            logging.debug(f"Fulfilled local interest in {tag} @ {time}")
+            logging.debug(f"Fulfilled local interest in {tag} @ {new_time}")
