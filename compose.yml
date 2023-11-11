@@ -1,7 +1,40 @@
+version: "3"
+
 services:
-  a:
+
+  server:
     build: .
-  b:
+    deploy:
+      replicas: 2
+    environment:
+      - SCRIPT=example-server.py
+      - PORT=33333
+      - NET_TTL=180
+      - NET_TPF=18
+
+  sensor:
     build: .
-  c:
+    environment:
+      - SCRIPT=example-sensor.py
+      - ID=my_cool_sensor
+      - PORT=33334
+      - SERVER_HOST=tcdicn-server-2
+      - SERVER_PORT=33333
+      - NET_TTL=90
+      - NET_TPF=18
+      - NET_TTP=0
+
+  actuator:
     build: .
+    environment:
+      - SCRIPT=example-actuator.py
+      - ID=my_cool_actuator
+      - PORT=33334
+      - SERVER_HOST=tcdicn-server-4
+      - SERVER_PORT=33333
+      - NET_TTL=90
+      - NET_TPF=18
+      - NET_TTP=0
+      - GET_TTL=90
+      - GET_TPF=18
+      - GET_TTP=0
