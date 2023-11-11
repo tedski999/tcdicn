@@ -7,6 +7,9 @@ import tcdicn
 
 async def main():
 
+    # Allow the ICN server to start before attempting to use it
+    await asyncio.sleep(3)
+
     # Get parameters or defaults
     id = os.environ.get("ID", "my_cool_actuator")
     port = int(os.environ.get("PORT", random.randint(33334, 65536)))
@@ -30,7 +33,7 @@ async def main():
     # Start the client as a background task
     logging.info("Starting client...")
     client = tcdicn.Client(
-        id, port, tags,
+        id, port, [],
         server_host, server_port,
         net_ttl, net_tpf, net_ttp)
 

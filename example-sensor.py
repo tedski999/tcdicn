@@ -7,6 +7,9 @@ import tcdicn
 
 async def main():
 
+    # Allow the ICN server to start before attempting to use it
+    await asyncio.sleep(3)
+
     # Get parameters or defaults
     id = os.environ.get("ID", "my_cool_sensor")
     port = int(os.environ.get("PORT", random.randint(33334, 65536)))
