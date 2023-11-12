@@ -9,14 +9,14 @@ import tcdicn
 async def main():
 
     # Get parameters or defaults
-    id = os.environ.get("TCDICN_ID")
+    name = os.environ.get("TCDICN_ID")
     port = int(os.environ.get("TCDICN_PORT", random.randint(33334, 65536)))
     server_host = os.environ.get("TCDICN_SERVER_HOST", "localhost")
     server_port = int(os.environ.get("TCDICN_SERVER_PORT", 33333))
     net_ttl = int(os.environ.get("TCDICN_NET_TTL", 180))
     net_tpf = int(os.environ.get("TCDICN_NET_TPF", 3))
     net_ttp = float(os.environ.get("TCDICN_NET_TTP", 0))
-    if id is None:
+    if name is None:
         sys.exit("Please give your client a unique ID by setting TCDICN_ID")
 
     # Logging verbosity
@@ -32,7 +32,7 @@ async def main():
     # Start the client as a background task
     logging.info("Starting client...")
     client = tcdicn.Client(
-        id, port, tags,
+        name, port, tags,
         server_host, server_port,
         net_ttl, net_tpf, net_ttp)
 
@@ -42,11 +42,11 @@ async def main():
             await asyncio.sleep(random.uniform(1, 2))
             tag = random.choice(tags)
             value = random.randint(0, 10)
-            logging.info(f"Publishing {tag}={value}...")
+            logging.info("Publishing %s = %s...", tag, value)
             try:
                 await client.set(tag, value)
-            except OSError as e:
-                logging.error(f"Failed to publish: {e}")
+            except OSError as exc:
+                logging.error("Failed to publish: %s", exc)
 
     # Initialise execution of the sensor logic as a coroutine
     logging.info("Starting sensor...")

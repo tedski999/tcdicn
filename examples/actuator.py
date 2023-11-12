@@ -9,7 +9,7 @@ import tcdicn
 async def main():
 
     # Get parameters or defaults
-    id = os.environ.get("TCDICN_ID")
+    name = os.environ.get("TCDICN_ID")
     port = int(os.environ.get("TCDICN_PORT", random.randint(33334, 65536)))
     server_host = os.environ.get("TCDICN_SERVER_HOST", "localhost")
     server_port = int(os.environ.get("TCDICN_SERVER_PORT", 33333))
@@ -19,7 +19,7 @@ async def main():
     get_ttl = int(os.environ.get("TCDICN_GET_TTL", 180))
     get_tpf = int(os.environ.get("TCDICN_GET_TPF", 3))
     get_ttp = float(os.environ.get("TCDICN_GET_TTP", 0))
-    if id is None:
+    if name is None:
         sys.exit("Please give your client a unique ID by setting TCDICN_ID")
 
     # Logging verbosity
@@ -35,7 +35,7 @@ async def main():
     # Start the client as a background task
     logging.info("Starting client...")
     client = tcdicn.Client(
-        id, port, [],
+        name, port, [],
         server_host, server_port,
         net_ttl, net_tpf, net_ttp)
 
@@ -44,12 +44,12 @@ async def main():
         tasks = set()
 
         def subscribe(tag):
+            logging.info("Subscribing to %s...", tag)
             getter = client.get(tag, get_ttl, get_tpf, get_ttp)
             task = asyncio.create_task(getter, name=tag)
             tasks.add(task)
 
         for tag in tags:
-            logging.info(f"Subscribing to {tag}...")
             subscribe(tag)
 
         while True:
@@ -58,8 +58,7 @@ async def main():
             for task in done:
                 tag = task.get_name()
                 value = task.result()
-                logging.info(f"Received {tag}={value}")
-                logging.info(f"Resubscribing to {tag}...")
+                logging.info("Received %s=%s", tag, value)
                 subscribe(tag)
 
     # Initialise execution of the actuator logic as a coroutine

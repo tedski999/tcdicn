@@ -55,7 +55,7 @@ class _ClientInfo:
         self.ttp = ttp  # Time To Propagate: Max time node can batch broadcast
         self.eol = eol  # End Of Life: When the client will expire
         self.tags = tags  # Tags this client is known to publish
-        self.interests: Dict[_Tag, _InterestInfo] = dict()  # See _InterestInfo
+        self.interests: Dict[_Tag, _InterestInfo] = {}  # See _InterestInfo
 
 
 # Client adverts, contained within a peer UDP advertisement, let other nodes
@@ -91,7 +91,7 @@ class _PeerInfo:
     def __init__(self, eol: float):
         self.timer = None  # A task to expire this entry
         self.eol = eol  # End Of Life: When this peer will expire
-        self.routes: Dict[_ClientId, _Score] = dict()  # See _Score
+        self.routes: Dict[_ClientId, _Score] = {}  # See _Score
 
 
 # Utility function for setting up UDP transport and handling datagrams
@@ -101,13 +101,13 @@ async def _start_udp_transport(callback, host: str, port: int) \
 
     class Protocol:
 
-        def connection_made(_, transport: DatagramTransport):
+        def connection_made(self, transport: DatagramTransport):
             pass
 
-        def connection_lost(_, e: Exception):
-            logging.warning(f"UDP transport lost: {e}")
+        def connection_lost(self, exc: Exception):
+            logging.warning("UDP transport lost: %s", exc)
 
-        def datagram_received(_, msg_bytes: bytes, src: Tuple[str, int]):
+        def datagram_received(self, msg_bytes: bytes, src: Tuple[str, int]):
             # Ignore nodes own broadcast messages
             l_addrs = socket.getaddrinfo(socket.gethostname(), port)
             r_addrs = socket.getaddrinfo(socket.getfqdn(src[0]), src[1])
@@ -117,11 +117,11 @@ async def _start_udp_transport(callback, host: str, port: int) \
                         return
             callback(msg_bytes, _PeerId(src[0], src[1]))
 
-        def error_received(_, e: OSError):
-            logging.warning(f"UDP transport error: {e}")
+        def error_received(self, exc: OSError):
+            logging.warning("UDP transport error: %s", exc)
 
     return await asyncio.get_running_loop().create_datagram_endpoint(
-        lambda: Protocol(),
+        Protocol,
         local_addr=(host if host is not None else "0.0.0.0", port),
         allow_broadcast=True)
 
@@ -154,7 +154,7 @@ async def _send_advert_msg(
 # the shortest route as defined by the _ClientInfo.tags and _PeerInfo.routes
 async def _send_get_msg(
         peer: _PeerId, ttp: float, eol: float,
-        tag: _Tag, last_time: float, id: _ClientId):
+        tag: _Tag, last_time: float, client: _ClientId):
     _, writer = await asyncio.open_connection(peer.host, peer.port)
     writer.write(json.dumps({
         "version": VERSION,
@@ -163,7 +163,7 @@ async def _send_get_msg(
         "eol": eol,
         "tag": tag,
         "time": last_time,
-        "client": id
+        "client": client
     }).encode())
     await writer.drain()
     writer.close()
@@ -199,20 +199,20 @@ class Server:
 
         # Initialise state
         # TODO(optimisation): load from disk in case of reboot
-        self.content: Dict[_Tag, _TagInfo] = dict()
-        self.clients: Dict[_ClientId, _ClientInfo] = dict()
-        self.peers: Dict[_PeerId, _PeerInfo] = dict()
+        self.content: Dict[_Tag, _TagInfo] = {}
+        self.clients: Dict[_ClientId, _ClientInfo] = {}
+        self.peers: Dict[_PeerId, _PeerInfo] = {}
 
         # Start UDP and TCP servers
         udp_task = asyncio.create_task(self._start_udp())
         tcp_task = asyncio.create_task(self._start_tcp())
         self.task = asyncio.gather(udp_task, tcp_task)
-        logging.info(f"Listening on :{self.port}")
+        logging.info("Listening on :%s", self.port)
 
         # Shutdown if we receive a signal
         loop = asyncio.get_running_loop()
-        sigs = [signal.SIGHUP, signal.SIGTERM, signal.SIGINT]
-        [loop.add_signal_handler(s, lambda: self.task.cancel()) for s in sigs]
+        for sig in [signal.SIGHUP, signal.SIGTERM, signal.SIGINT]:
+            loop.add_signal_handler(sig, self.task.cancel)
 
     # Start listening for UDP broadcast adverts and regularly broadcast our own
     async def _start_udp(self):
@@ -224,7 +224,7 @@ class Server:
             # Construct a table of clients to advertise to our peers
             # TODO(optimisation): split up message to avoid fragmentation
             # TODO(optimisation): respect clients ttp by broadcasting earlier
-            clients: Dict[_ClientId, _ClientAdvert] = dict()
+            clients: Dict[_ClientId, _ClientAdvert] = {}
             for client, info in self.clients.items():
                 if info.ttp is None:
                     continue  # Only broadcast clients we have just heard of
@@ -239,23 +239,23 @@ class Server:
             eol = time.time() + self.net_ttl
             try:
                 await _send_advert_msg(addr, udp, eol, clients)
-            except OSError as e:
-                logging.error(f"Error broadcasting advert: {e}")
+            except OSError as exc:
+                logging.error("Error broadcasting advert: %s", exc)
 
             # Repeat a number of times before our TTL can run out
             await asyncio.sleep(self.net_ttl / self.net_tpf)
 
     # Handle UDP advertisement from peers
     def _on_udp_data(self, msg_bytes: bytes, peer: _PeerId):
-        logging.debug(f"Handling UDP datagram from {peer}...")
+        logging.debug("Handling UDP datagram from %s...", peer)
 
         # Parse advertisement
         msg = json.loads(msg_bytes)
         if msg["version"] != VERSION and msg["type"] != "advert":
-            logging.warning(f"Received bad datagram from {peer}; ignoring.")
+            logging.warning("Received bad datagram from %s; ignored.", peer)
             return
         eol = msg["eol"]
-        clients: Dict[_ClientId, _ClientAdvert] = dict()
+        clients: Dict[_ClientId, _ClientAdvert] = {}
         for client, advert in msg["clients"].items():
             info = _ClientInfo(advert["ttp"], advert["eol"], advert["tags"])
             clients[client] = _ClientAdvert(info, advert["score"])
@@ -273,7 +273,7 @@ class Server:
         # Update routes to client via peer scores
         for client, advert in clients.items():
             self.peers[peer].routes[client] = advert.score
-            logging.debug(f"Set {client} via {peer} score: {advert.score}")
+            logging.debug("Set %s via %s score %s", client, peer, advert.score)
 
     # Process a new client advertisement from a peer UDP broadcast
     def _update_client(self, client: _ClientId, info: _ClientInfo):
@@ -284,16 +284,16 @@ class Server:
             self.clients[client].ttp = info.ttp
             self.clients[client].eol = info.eol
             self.clients[client].tags = info.tags
-            logging.debug(f"Refreshed client: {client}")
+            logging.debug("Refreshed client: %s", client)
         else:
             self.clients[client] = info
-            logging.info(f"Added new client: {client}")
+            logging.info("Added new client: %s", client)
 
         # Insert client into clients table
         async def _do_timeout():
             await asyncio.sleep(self.clients[client].eol - time.time())
             del self.clients[client]
-            logging.info(f"Removed client: {client}")
+            logging.info("Removed client: %s", client)
         self.clients[client].timer = asyncio.create_task(_do_timeout())
 
     # Process a peer advertisement from a peer UDP broadcast
@@ -303,16 +303,16 @@ class Server:
         if peer in self.peers:
             self.peers[peer].timer.cancel()
             self.peers[peer].eol = eol
-            logging.debug(f"Refreshed peer: {peer}")
+            logging.debug("Refreshed peer: %s", peer)
         else:
             self.peers[peer] = _PeerInfo(eol)
-            logging.info(f"Added new peer: {peer}")
+            logging.info("Added new peer: %s", peer)
 
         # Insert peer into peers table
         async def _do_timeout():
             await asyncio.sleep(self.peers[peer].eol - time.time())
             del self.peers[peer]
-            logging.info(f"Removed peer: {peer}")
+            logging.info("Removed peer: %s", peer)
         self.peers[peer].timer = asyncio.create_task(_do_timeout())
 
     # Start listening for connecting peers
@@ -324,7 +324,7 @@ class Server:
     # Handle a peer connection
     async def _on_tcp_conn(self, reader: StreamReader, writer: StreamWriter):
         peer = _PeerId(*writer.get_extra_info("peername")[0:2])
-        logging.debug(f"Handling TCP connection from {peer}...")
+        logging.debug("Handling TCP connection from %s...", peer)
 
         # Read entire message
         msg_bytes = await reader.read()
@@ -333,7 +333,7 @@ class Server:
 
         # Parse message
         if msg["version"] != VERSION or msg["type"] not in ["get", "set"]:
-            logging.warning(f"Received bad message from {peer}; ignoring.")
+            logging.warning("Received bad message from %s; ignored.", peer)
             return
         if msg["type"] == "get":
             await self._process_get_msg(peer, msg)
@@ -367,11 +367,12 @@ class Server:
         tag = msg["tag"]
         last_time = msg["time"]
         client = msg["client"]
-        logging.debug(f"Received get from {peer}: {tag}>{last_time} @{client}")
+        logging.debug(
+            "Received get from %s: %s > %s to %s",
+            peer, tag, last_time, client)
 
         # We don't (yet) know this client, so create a placeholder for now
         if client not in self.clients:
-            logging.warning(f"Received get from {peer} for unknown {client}")
             self.clients[client] = _ClientInfo(None, eol, [])
 
         # Update interest if newer time or later eol is received
@@ -402,20 +403,24 @@ class Server:
         tag = msg["tag"]
         value = msg["value"]
         new_time = msg["time"]
-        logging.debug(f"Received set from {peer}: {tag}={value}@{new_time}")
+        logging.debug(
+            "Received set from %s: %s = %s @ %s",
+            peer, tag, value, new_time)
 
         if tag in self.content and self.content[tag].new_time >= new_time:
             return  # Ignore old publishes
 
-        logging.info(f"Received update from {peer}: {tag}={value}@{new_time}")
+        logging.info(
+            "Received update from %s: %s = %s @ %s",
+            peer, tag, value, new_time)
         self.content[tag] = _TagInfo(value, new_time)
 
         # TODO(v0.2): remove gossiping once routing is finished
         for peer in self.peers:
             try:
                 await _send_set_msg(peer, tag, value, new_time)
-            except OSError as e:
-                logging.error(f"Error publishing value: {e}")
+            except OSError as exc:
+                logging.error("Error publishing value: %s", exc)
 
     # Compute the best peer to go via to get to client based on known scores
     def _get_best_peer_to_client(self, client: _ClientId) -> _PeerId:
@@ -439,10 +444,10 @@ class Client:
     # as well as a list of tags to advertise as being published by this node
     # and the address of the local ICN server to communicate with
     def __init__(
-            self, id: _ClientId, port: int, tags: List[_Tag],
+            self, name: _ClientId, port: int, tags: List[_Tag],
             server_host: str, server_port: int,
             net_ttl: float, net_tpf: int, net_ttp: float):
-        self.id = id
+        self.name = name
         self.port = port
         self.tags = tags
         self.server = _PeerId(server_host, server_port)
@@ -452,20 +457,20 @@ class Client:
 
         # Initialise state
         # TODO(optimisation): load from disk in case of reboot
-        self.pending_interests: Dict[_Tag, asyncio.Future] = dict()
-        self.content: Dict[_Tag, _TagInfo] = dict()
+        self.pending_interests: Dict[_Tag, asyncio.Future] = {}
+        self.content: Dict[_Tag, _TagInfo] = {}
 
         # Start UDP and TCP servers
         udp_task = asyncio.create_task(self._start_udp())
         tcp_task = asyncio.create_task(self._start_tcp())
         self.task = asyncio.gather(udp_task, tcp_task)
-        logging.info(f"Pointed towards {self.server}")
-        logging.info(f"Listening on :{self.port}")
+        logging.info("Pointed towards %s", self.server)
+        logging.info("Listening on :%s", self.port)
 
         # Shutdown if we receive a signal
         loop = asyncio.get_running_loop()
-        sigs = [signal.SIGHUP, signal.SIGTERM, signal.SIGINT]
-        [loop.add_signal_handler(s, lambda: self.task.cancel()) for s in sigs]
+        for sig in [signal.SIGHUP, signal.SIGTERM, signal.SIGINT]:
+            loop.add_signal_handler(sig, self.task.cancel)
 
     # Subscribes to tag and returns first new value received
     # Repeats request every TTL/TPF seconds until successful or cancelled
@@ -476,7 +481,7 @@ class Client:
         if tag not in self.pending_interests:
             loop = asyncio.get_running_loop()
             self.pending_interests[tag] = loop.create_future()
-            logging.debug(f"Added new local interest for {tag}.")
+            logging.debug("Added new local interest for %s.", tag)
 
         # Subscribe to any data with a freshness greater than the last
         last_time = self.content[tag].new_time if tag in self.content else 0
@@ -484,13 +489,13 @@ class Client:
         # Keep trying until either success or this coroutine is cancelled
         async def subscribe():
             while not self.pending_interests[tag].done():
-                logging.debug(f"Sending new interest for {tag}...")
+                logging.debug("Sending new interest for %s...", tag)
                 try:
                     await _send_get_msg(
                         self.server, ttp, time.time() + ttl,
-                        tag, last_time, self.id)
-                except OSError as e:
-                    logging.error(f"Error sending interest: {e}")
+                        tag, last_time, self.name)
+                except OSError as exc:
+                    logging.error("Error sending interest: %s", exc)
                 await asyncio.sleep(ttl / tpf)
         task = asyncio.create_task(subscribe())
         value = await self.pending_interests[tag]
@@ -502,8 +507,8 @@ class Client:
     async def set(self, tag: str, value: str):
         try:
             await _send_set_msg(self.server, tag, value, time.time())
-        except OSError as e:
-            logging.error(f"Error publishing value: {e}")
+        except OSError as exc:
+            logging.error("Error publishing value: %s", exc)
 
     # Start regularly sending UDP advertisements to the local ICN server to
     # let the rest of the network know this client exists
@@ -515,17 +520,17 @@ class Client:
             eol = time.time() + self.net_ttl
             info = _ClientInfo(self.net_ttp, eol, self.tags)
             advert = _ClientAdvert(info, 1000)
-            clients = {self.id: advert}
+            clients = {self.name: advert}
             try:
                 await _send_advert_msg(self.server, udp, eol, clients)
-            except OSError as e:
-                logging.error(f"Error broadcasting advert: {e}")
+            except OSError as exc:
+                logging.error("Error broadcasting advert: %s", exc)
             await asyncio.sleep(self.net_ttl / self.net_tpf)
 
     # Clients should not receive any UDP advertisement as they should not be
     # listening on the standard port
-    def _on_udp_data(self, msg_bytes: bytes, peer: _PeerId):
-        logging.warning(f"Received unexpected datagram from {peer}; ignoring.")
+    def _on_udp_data(self, _: bytes, peer: _PeerId):
+        logging.warning("Received unexpected datagram from %s; ignored.", peer)
 
     # Start listening for connections from the ICN server
     async def _start_tcp(self):
@@ -536,7 +541,7 @@ class Client:
     # Handle a connection from the ICN server
     async def _on_tcp_conn(self, reader: StreamReader, writer: StreamWriter):
         peer = _PeerId(*writer.get_extra_info("peername")[0:2])
-        logging.debug(f"Handling TCP connection from {peer}...")
+        logging.debug("Handling TCP connection from %s...", peer)
 
         # Read entire message
         msg_bytes = await reader.read()
@@ -545,7 +550,7 @@ class Client:
 
         # Parse set message
         if msg["version"] != VERSION or msg["type"] != "set":
-            logging.warning(f"Received bad message from {peer}; ignoring.")
+            logging.warning("Received bad message from %s; ignored.", peer)
             return
         tag = msg["tag"]
         value = msg["value"]
@@ -556,4 +561,4 @@ class Client:
             self.content[tag] = _TagInfo(value, new_time)
             self.pending_interests[tag].set_result(value)
             del self.pending_interests[tag]
-            logging.info(f"Fulfilled local interest in {tag} @ {new_time}")
+            logging.info("Fulfilled local interest in %s @ %s", tag, new_time)
