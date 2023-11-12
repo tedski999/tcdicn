@@ -1,0 +1,30 @@
+version: "3"
+name: "tcdicn-basic"
+
+services:
+
+  server:
+    build:
+      context: ..
+      dockerfile_inline: |
+        FROM python
+        COPY tcdicn.py examples/server.py .
+        CMD python3 -c "import random, time; time.sleep(random.uniform(0, 5))"; exec python3 server.py
+
+  sensor:
+    build:
+      context: ..
+      dockerfile_inline: |
+        FROM python
+        COPY tcdicn.py examples/sensor.py .
+        CMD python3 -c "import random, time; time.sleep(random.uniform(0, 5))"; exec python3 sensor.py
+    environment: [ TCDICN_SERVER_HOST=server, TCDICN_ID=my_cool_sensor ]
+
+  actuator:
+    build:
+      context: ..
+      dockerfile_inline: |
+        FROM python
+        COPY tcdicn.py examples/actuator.py .
+        CMD python3 -c "import random, time; time.sleep(random.uniform(0, 5))"; exec python3 actuator.py
+    environment: [ TCDICN_SERVER_HOST=server, TCDICN_ID=my_cool_sensor ]

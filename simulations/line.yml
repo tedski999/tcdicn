@@ -1,0 +1,51 @@
+version: "3"
+name: "tcdicn-line"
+
+services:
+
+  a-server:
+    extends:
+      file: basic.yml
+      service: server
+    networks: [ a, ab ]
+
+  a-sensor:
+    extends:
+      file: basic.yml
+      service: sensor
+    networks: [ a ]
+    environment: [ TCDICN_SERVER_HOST=a-server, TCDICN_ID=my_cool_sensor ]
+
+  b-server:
+    extends:
+      file: basic.yml
+      service: server
+    networks: [ ab, b, bc ]
+
+  c-server:
+    extends:
+      file: basic.yml
+      service: server
+    networks: [ bc, c, cd ]
+
+  d-server:
+    extends:
+      file: basic.yml
+      service: server
+    networks: [ cd, d ]
+
+  d-actuator:
+    extends:
+      file: basic.yml
+      service: actuator
+    networks: [ d ]
+    environment: [ TCDICN_SERVER_HOST=d-server, TCDICN_ID=my_cool_actuator ]
+
+networks:
+  a:
+  ab:
+  b:
+  bc:
+  c:
+  cd:
+  d:
