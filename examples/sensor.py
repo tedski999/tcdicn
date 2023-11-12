@@ -2,22 +2,22 @@ import asyncio
 import logging
 import os
 import random
+import sys
 import tcdicn
 
 
 async def main():
 
-    # Allow the ICN server to start before attempting to use it
-    await asyncio.sleep(random.uniform(5, 8))
-
     # Get parameters or defaults
-    id = os.environ.get("ID", "my_cool_sensor")
-    port = int(os.environ.get("PORT", random.randint(33334, 65536)))
-    server_host = os.environ.get("SERVER_HOST", "localhost")
-    server_port = int(os.environ.get("SERVER_PORT", 33333))
-    net_ttl = int(os.environ.get("NET_TTL", 180))
-    net_tpf = int(os.environ.get("NET_TPF", 3))
-    net_ttp = float(os.environ.get("NET_TTP", 0))
+    id = os.environ.get("TCDICN_ID")
+    port = int(os.environ.get("TCDICN_PORT", random.randint(33334, 65536)))
+    server_host = os.environ.get("TCDICN_SERVER_HOST", "localhost")
+    server_port = int(os.environ.get("TCDICN_SERVER_PORT", 33333))
+    net_ttl = int(os.environ.get("TCDICN_NET_TTL", 180))
+    net_tpf = int(os.environ.get("TCDICN_NET_TPF", 3))
+    net_ttp = float(os.environ.get("TCDICN_NET_TTP", 0))
+    if id is None:
+        sys.exit("Please give your client a unique ID by setting TCDICN_ID")
 
     # Logging verbosity
     logging.basicConfig(

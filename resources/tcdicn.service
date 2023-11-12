@@ -1,0 +1,10 @@
+[Unit]
+Description=TCDICN Server
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 %h/tcdicn/examples/server.py
+WorkingDirectory=%h/tcdicn
+
+[Install]
+WantedBy=default.target

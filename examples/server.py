@@ -1,19 +1,15 @@
 import asyncio
 import logging
 import os
-import random
 import tcdicn
 
 
 async def main():
 
-    # Stagger starting ICN servers
-    await asyncio.sleep(random.uniform(0, 5))
-
     # Get parameters or defaults
-    port = int(os.environ.get("PORT", 33333))
-    net_ttl = int(os.environ.get("NET_TTL", 180))
-    net_tpf = int(os.environ.get("NET_TPF", 3))
+    port = int(os.environ.get("TCDICN_PORT", 33333))
+    net_ttl = int(os.environ.get("TCDICN_NET_TTL", 180))
+    net_tpf = int(os.environ.get("TCDICN_NET_TPF", 3))
 
     # Logging verbosity
     logging.basicConfig(
