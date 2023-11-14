@@ -14,6 +14,8 @@ from typing import Dict, Tuple, List
 # This allows peers which implement one or more versions to react appropriately
 VERSION: str = "0.2-dev"
 
+# The soft maximum size in bytes to allow batched client advert forwarding
+# broadcasts, which limits the number of client adverts sent at once
 # Generally a good idea set to less than the Maximum Transmission Unit (MTU)
 # This minimises the chance of peer advert broadcasts being dropped/lost
 ADVERT_CAPACITY: int = 512
@@ -42,15 +44,19 @@ def do_after(eol: float, callback) -> asyncio.Task:
     return asyncio.create_task(on_timeout())
 
 
+# Nodes commutate using messages which can be sent over TCP or UDP
+# A Message is only a JSON formatted version number and list of MessageItems
+# JSON field names are shrunk to help pack more information into UDP datagrams
+
+# This class is just define a common type between MessageItems
 class MessageItem:
-
-    def to_dict():
-        raise NotImplementedError
-
-    def from_dict():
-        raise NotImplementedError
+    def to_dict(): raise NotImplementedError
+    def from_dict(): raise NotImplementedError
 
 
+# Lets other nodes know what time your End Of Life (EOL) is
+# Without further PeerItems, you will be forgotten from the network after EOL
+# As such, these should be broadcasted over UDP at regular intervals before EOL
 class PeerItem(MessageItem):
     def __init__(self, eol: float):
         self.eol = eol
@@ -67,6 +73,11 @@ class PeerItem(MessageItem):
         return PeerItem(d["e"])
 
 
+# Tells other nodes about clients you know about and the route score
+# Nodes that contain their own clients can include adverts for them in the same
+# message as their regular PeerItem broadcast
+# Time To Propagate (TTP) demands that nodes wait no more than TTP seconds
+# before propagating this AdvertItem towards clients (due to batching reasons)
 class AdvertItem(MessageItem):
     def __init__(
             self, client: str, labels: List[str],
@@ -93,6 +104,11 @@ class AdvertItem(MessageItem):
         return AdvertItem(d["c"], d["l"], d["s"], d["p"], d["e"])
 
 
+# An expression of interest in data of some label published after some time
+# Is pushed towards known clients who have listed the label as one they publish
+# Has an End Of Life (EOL) specifying when the interest should be forgotten
+# Time To Propagate (TTP) demands that nodes wait no more than TTP seconds
+# before propagating this GetItem towards publishers (due to batching reasons)
 class GetItem(MessageItem):
     def __init__(
             self, client: str, label: str,
@@ -119,11 +135,15 @@ class GetItem(MessageItem):
         return GetItem(d["c"], d["l"], d["a"], d["p"], d["e"])
 
 
+# Request to cache and propagate the contained data towards interested clients
+# Time To Propagate (TTP) demands that nodes wait no more than TTP seconds
+# before propagating this SetItem towards subscribers (due to batching reasons)
 class SetItem:
-    def __init__(self, label: str, data: str, at: float):
+    def __init__(self, label: str, data: str, at: float, ttp: float):
         self.label = label
         self.data = data
         self.at = at
+        self.ttp = ttp
 
     def to_dict(self):
         return {
@@ -131,14 +151,16 @@ class SetItem:
             "l": self.label,
             "d": self.data,
             "a": self.at,
+            "p": self.ttp,
         }
 
     def from_dict(d):
         if d["t"] != "s":
             raise ValueError("Not a set request message item")
-        return SetItem(d["l"], d["d"], d["a"])
+        return SetItem(d["l"], d["d"], d["a"], d["p"])
 
 
+# The data structure passed between nodes on the network in JSON format
 class Message:
     def __init__(self, items: List[MessageItem]):
         self.version = VERSION
@@ -152,7 +174,7 @@ class Message:
 
     def from_dict(d):
         if d["v"] != VERSION:
-            raise ValueError("Message version unsuported:", d["v"])
+            raise ValueError("Message version unsupported:", d["v"])
         t_map = {"p": PeerItem, "a": AdvertItem, "g": GetItem, "s": SetItem}
         return Message([t_map[item["t"]].from_dict(item) for item in d["i"]])
 
@@ -191,6 +213,10 @@ class Interest:
     pass
 
 
+# Entries in the content store are keyed by their label
+# In addition to the data, they contain when the data was published and when
+# the data was viewed by the client, so that not-seen-before data can be gotten
+# The fulfil future allows calls to node.get() to wait for new data to arrive
 class Content:
     def __init__(self):
         self.data: str = None
@@ -199,8 +225,16 @@ class Content:
         self.fulfil: Future = None
 
 
+# Provides all the networking logic for interacting with a network of ICN nodes
+# While many can be listening on many ports on the PI at once, one must serve
+# as the PI master node listening on the default port (33333, which should be
+# provided to all nodes as the dport parameter) so that node discovery can work
+# For a node to be a client (something that either subscribes to or publishes
+# data to the network), you must provide a ClientInfo to start() which contains
+# a network-wide unique name as its network identifier
+# Duplicate names are not fatal but significantly reduce the networks ability
+# to send interests and data to only places that it is needed
 class Node:
-
     def __init__(self):
         self.log = logging.getLogger(__name__)
         self.peers: Dict[Addr, Peer] = {}
@@ -214,7 +248,8 @@ class Node:
         self.adverts_queue = queue.PriorityQueue()
         self.is_adverts_queue_changed = False
 
-    # TODO(comment)
+    # Starts all tasks needed for the node to communicate with the network
+    # Send the process a SIGINT or cancel the coroutine to shutdown the node
     async def start(
             self, port: int, dport: int,
             ttl: float, tpf: int,
@@ -406,7 +441,7 @@ class Node:
         # Schedule next batch
         self.schedule_batch_fwd_adverts()
 
-    # Network methods
+    # Network methods - May raise OSError
 
     async def send_msg(self, addr: Addr, msg: Message):
         msg_bytes = msg.to_bytes()
@@ -427,6 +462,7 @@ class Node:
 
     # Network event handlers
 
+    # UDP datagram entry point
     def on_datagram(self, data: bytes, addr: Addr):
         log = ContextLogger(self.log, f"UDP {addr[0]}:{addr[1]}")
 
@@ -442,6 +478,7 @@ class Node:
         # Handle message
         self.on_message(log, addr, data)
 
+    # TCP connection entry point
     async def on_connection(self, reader: StreamReader, writer: StreamWriter):
         addr = writer.get_extra_info("peername")[0:2]
         log = ContextLogger(self.log, f"TCP {addr[0]}:{addr[1]}")
@@ -460,6 +497,7 @@ class Node:
         # Handle message
         self.on_message(log, addr, data)
 
+    # Common logic for handling both TCP and UDP messages
     def on_message(self, log: Logger, addr: Addr, data: bytes):
 
         # Parse message
@@ -487,6 +525,10 @@ class Node:
         if self.is_adverts_queue_changed:
             self.schedule_batch_fwd_adverts()
             self.is_adverts_queue_changed = False
+
+    # Handlers for each MessageItem type
+    # If called directly, it is your responsibility to refresh any
+    # scheduled tasks that should be affected (see on_message)
 
     def on_peer(self, log: Logger, addr: Addr, peer: PeerItem):
         log = ContextLogger(log, "peer")
@@ -518,6 +560,8 @@ class Node:
         except KeyError:
             log.info("New client")
             self.clients[advert.client] = Client()
+            # TODO(optimisation): use batching+retrying
+            # TODO(v0.2): forward interests to new clients
 
         # Insert new entry with timeout
         def on_timeout():
@@ -536,10 +580,10 @@ class Node:
         # TODO(safely): cooldown
         # TODO(safely): issue warning if duplicate name spotted
 
-        # TODO(v0.2) forward interests if necessary with batching
-
     def on_get(self, log: Logger, g: GetItem):
         log = ContextLogger(log, f"get {g.label}>{g.after}@{g.client}")
+
+        # TODO(v0.2): interests
 
         # Check for previous entry
         if g.label not in self.interests:
@@ -552,7 +596,7 @@ class Node:
             self.interests[g.label][g.client].timer.cancel()
         except KeyError:
             log.info("New interest label client")
-            self.interests[g.label][g.client] = {}  # TODO
+            self.interests[g.label][g.client] = {}
 
         # Insert new entry with timeout
         def on_timeout():
@@ -582,7 +626,8 @@ class Node:
         self.content_store[s.label].at = s.at
         log.debug("Updated local content store")
 
-        # TODO(v0.2) serve interests with batching
+        # TODO(optimisation) use batching+retrying with ttp set to interest ttp
+        # TODO(v0.2) send towards only interested clients
         msg = Message([s])
         for peer in self.peers:
             asyncio.create_task(self.send_msg(peer, msg))
