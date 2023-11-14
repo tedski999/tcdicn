@@ -10,8 +10,8 @@ async def main():
 
     # Get parameters or defaults
     name = os.environ.get("TCDICN_ID")
-    sport = int(os.environ.get("TCDICN_SPORT", 33333))
-    dport = int(os.environ.get("TCDICN_DPORT", sport))
+    port = int(os.environ.get("TCDICN_PORT", 33333))
+    dport = int(os.environ.get("TCDICN_DPORT", port))
     ttl = float(os.environ.get("TCDICN_TTL", 90))
     tpf = int(os.environ.get("TCDICN_TPF", 6))
     ttp = float(os.environ.get("TCDICN_TTP", 1))
@@ -30,8 +30,9 @@ async def main():
 
     # ICN client node called name publishes these tags and needs
     # any data propagated back in under ttp seconds at each node
-    client = {"name": name, "ttp": ttp, "tags": tags}
+    client = tcdicn.ClientInfo(name, tags, ttp)
     node = tcdicn.Node()
+    node_task = asyncio.create_task(node.start(port, dport, ttl, tpf, client))
 
     # Publish random data to a random tag every couple of seconds
     async def run_sensor():
@@ -44,12 +45,12 @@ async def main():
                 await node.set(tag, value)
             except OSError as exc:
                 logging.error("Failed to publish: %s", exc)
+    sensor_task = asyncio.create_task(run_sensor())
 
     # Run ICN node until shutdown while executing the sensor
     logging.info("Starting sensor...")
-    sensor_task = asyncio.create_task(run_sensor())
-    await node.start(sport, dport, ttl, tpf, client)
-    sensor_task.cancel()
+    tasks = [node_task, sensor_task]
+    await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
     logging.info("Done.")
 
 if __name__ == "__main__":

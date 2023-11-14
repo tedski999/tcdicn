@@ -10,8 +10,8 @@ async def main():
 
     # Get parameters or defaults
     name = os.environ.get("TCDICN_ID")
-    sport = int(os.environ.get("TCDICN_SPORT", 33333))
-    dport = int(os.environ.get("TCDICN_DPORT", sport))
+    port = int(os.environ.get("TCDICN_PORT", 33333))
+    dport = int(os.environ.get("TCDICN_DPORT", port))
     ttl = float(os.environ.get("TCDICN_TTL", 90))
     tpf = int(os.environ.get("TCDICN_TPF", 6))
     ttp = float(os.environ.get("TCDICN_TTP", 1))
@@ -33,8 +33,9 @@ async def main():
 
     # ICN client node called name does not publish and needs
     # any data propagated back in under ttp seconds at each node
-    client = {"name": name, "ttp": ttp, "tags": []}
+    client = tcdicn.ClientInfo(name, [], ttp)
     node = tcdicn.Node()
+    node_task = asyncio.create_task(node.start(port, dport, ttl, tpf, client))
 
     # Subscribe to random subset of data
     async def run_actuator():
@@ -57,11 +58,12 @@ async def main():
                 value = task.result()
                 logging.info("Received %s=%s", tag, value)
                 subscribe(tag)
+    actuator_task = asyncio.create_task(run_actuator())
 
     # Run ICN node until shutdown while executing the actuator
     logging.info("Starting actuator...")
-    actuator_task = asyncio.create_task(run_actuator())
-    await node.start(sport, dport, ttl, tpf, client)
+    tasks = [node_task, actuator_task]
+    await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
     actuator_task.cancel()
     logging.info("Done.")
 
