@@ -5,7 +5,7 @@ import queue
 import signal
 import socket
 import time
-from asyncio import DatagramTransport, StreamWriter, StreamReader, Future
+from asyncio import Task, Future, DatagramTransport, StreamWriter, StreamReader
 from logging import Logger, LoggerAdapter
 from json import JSONDecodeError
 from typing import Dict, Tuple, List
@@ -37,7 +37,7 @@ def to_human(timestamp: float) -> str:
 
 
 # Execute callback after End Of Life timestamp - Useful for implementing caches
-def do_after(eol: float, callback) -> asyncio.Task:
+def do_after(eol: float, callback) -> Task:
     async def on_timeout():
         await asyncio.sleep(eol - time.time())
         callback()
@@ -50,8 +50,8 @@ def do_after(eol: float, callback) -> asyncio.Task:
 
 # This class is just define a common type between MessageItems
 class MessageItem:
-    def to_dict(): raise NotImplementedError
-    def from_dict(): raise NotImplementedError
+    def to_dict() -> dict: raise NotImplementedError
+    def from_dict(d: dict): raise NotImplementedError
 
 
 # Lets other nodes know what time your End Of Life (EOL) is
@@ -60,14 +60,15 @@ class MessageItem:
 class PeerItem(MessageItem):
     def __init__(self, eol: float):
         self.eol = eol
+        self.timer: Task = None  # Used internal within nodes to timeout entry
 
-    def to_dict(self):
+    def to_dict(self) -> dict:
         return {
             "t": "p",
             "e": self.eol,
         }
 
-    def from_dict(d):
+    def from_dict(d: dict):
         if d["t"] != "p":
             raise ValueError("Not a peer message item")
         return PeerItem(d["e"])
@@ -87,8 +88,9 @@ class AdvertItem(MessageItem):
         self.score = score
         self.ttp = ttp
         self.eol = eol
+        self.timer: Task = None  # Used internal within nodes to timeout entry
 
-    def to_dict(self):
+    def to_dict(self) -> dict:
         return {
             "t": "a",
             "c": self.client,
@@ -98,7 +100,7 @@ class AdvertItem(MessageItem):
             "e": self.eol,
         }
 
-    def from_dict(d):
+    def from_dict(d: dict):
         if d["t"] != "a":
             raise ValueError("Not an advert message item")
         return AdvertItem(d["c"], d["l"], d["s"], d["p"], d["e"])
@@ -118,8 +120,9 @@ class GetItem(MessageItem):
         self.after = after
         self.ttp = ttp
         self.eol = eol
+        self.timer = None  # Used internal within nodes to timeout entry
 
-    def to_dict(self):
+    def to_dict(self) -> dict:
         return {
             "t": "g",
             "c": self.client,
@@ -129,7 +132,7 @@ class GetItem(MessageItem):
             "e": self.eol,
         }
 
-    def from_dict(d):
+    def from_dict(d: dict):
         if d["t"] != "g":
             raise ValueError("Not a get request message item")
         return GetItem(d["c"], d["l"], d["a"], d["p"], d["e"])
@@ -144,8 +147,11 @@ class SetItem:
         self.data = data
         self.at = at
         self.ttp = ttp
+        # Used internal within nodes to allow .get() to always return new data
+        self.last: float = 0
+        self.fulfil: Task = None
 
-    def to_dict(self):
+    def to_dict(self) -> dict:
         return {
             "t": "s",
             "l": self.label,
@@ -154,7 +160,7 @@ class SetItem:
             "p": self.ttp,
         }
 
-    def from_dict(d):
+    def from_dict(d: dict):
         if d["t"] != "s":
             raise ValueError("Not a set request message item")
         return SetItem(d["l"], d["d"], d["a"], d["p"])
@@ -166,13 +172,13 @@ class Message:
         self.version = VERSION
         self.items = items
 
-    def to_dict(self):
+    def to_dict(self) -> dict:
         return {
             "v": VERSION,
             "i": [item.to_dict() for item in self.items]
         }
 
-    def from_dict(d):
+    def from_dict(d: dict):
         if d["v"] != VERSION:
             raise ValueError("Message version unsupported:", d["v"])
         t_map = {"p": PeerItem, "a": AdvertItem, "g": GetItem, "s": SetItem}
@@ -183,46 +189,6 @@ class Message:
 
     def from_bytes(data: bytes):
         return Message.from_dict(json.loads(data))
-
-
-class ClientInfo:
-    def __init__(
-            self, name: str, labels: List[str],
-            ttp: float, score: float = 1000):
-        self.name = name
-        self.labels = labels
-        self.ttp = ttp
-        self.score = score
-
-    def to_advert(self, eol: float) -> AdvertItem:
-        return AdvertItem(self.name, self.labels, self.score, self.ttp, eol)
-
-
-class Peer:
-    def __init__(self):
-        self.timer = None
-
-
-class Client:
-    def __init__(self):
-        self.eol = 0
-        self.timer = None
-
-
-class Interest:
-    pass
-
-
-# Entries in the content store are keyed by their label
-# In addition to the data, they contain when the data was published and when
-# the data was viewed by the client, so that not-seen-before data can be gotten
-# The fulfil future allows calls to node.get() to wait for new data to arrive
-class Content:
-    def __init__(self):
-        self.data: str = None
-        self.at: float = 0
-        self.last: float = 0
-        self.fulfil: Future = None
 
 
 # Provides all the networking logic for interacting with a network of ICN nodes
@@ -237,12 +203,12 @@ class Content:
 class Node:
     def __init__(self):
         self.log = logging.getLogger(__name__)
-        self.peers: Dict[Addr, Peer] = {}
-        self.clients: Dict[str, Client] = {}
-        self.interests: Dict[str, Interest] = {}
-
+        self.peers: Dict[Addr, PeerItem] = {}  # IP>Peer info
+        self.clients: Dict[str, AdvertItem] = {}  # ID>Client info
+        self.interests: Dict[str, Dict[str, GetItem]] = {}  # Label+ID>Interest
+        self.routes: Dict[str, List[Dict]] = {}  # ID>Score+Route
         # TODO(optimisation): write to/read from disk
-        self.content_store: Dict[str, Content] = {}
+        self.content_store: Dict[str, SetItem] = {}  # Label >data
 
         self.batch_fwd_adverts_task = None
         self.adverts_queue = queue.PriorityQueue()
@@ -253,11 +219,13 @@ class Node:
     async def start(
             self, port: int, dport: int,
             ttl: float, tpf: int,
-            client: ClientInfo = None):
+            client: dict = None):
         self.port = port
         self.dport = dport
         self.ttl = ttl
-        self.client = client
+
+        self.advert = None if client is None else AdvertItem(
+            client["name"], client["labels"], 1000, client["ttp"], 0)
 
         loop = asyncio.get_running_loop()
 
@@ -288,9 +256,11 @@ class Node:
             while True:
                 try:
                     self.log.debug("Broadcasting advert...")
-                    eol = time.time() + ttl
-                    adverts = [] if client is None else [client.to_advert(eol)]
-                    self.broadcast_msg(Message([PeerItem(eol)] + adverts))
+                    items = [PeerItem(time.time() + ttl)]
+                    if self.advert is not None:
+                        self.advert.eol = items[0].eol
+                        items.append(self.advert)
+                    self.broadcast_msg(Message(items))
                 except OSError as e:
                     self.log.warning("Error broadcasting: %s", e)
                 await asyncio.sleep(ttl / tpf)
@@ -323,12 +293,12 @@ class Node:
     # Allows each intermediate node to batch responses for up to TTP seconds
     async def get(self, label: str, ttl: float, tpf: int, ttp: float) -> str:
         log = ContextLogger(self.log, f"get {label}")
-        if self.client is None:
+        if self.advert is None:
             raise RuntimeError("Only client nodes can subscribe")
 
         # Check if local content store already has a new value
         if label not in self.content_store:
-            self.content_store[label] = Content()
+            self.content_store[label] = SetItem(label, None, 0, ttp)
             log.debug("Created new label in local content store")
         if self.content_store[label].at > self.content_store[label].last:
             log.info("New value found in local content store")
@@ -345,13 +315,13 @@ class Node:
 
             # Keep trying until either success or this coroutine is cancelled
             async def subscribe():
-                client = self.client.client
                 after = self.content_store[label].last
+                get = GetItem(self.advert.client, label, after, ttp, 0)
                 while True:
                     log.debug("Sending get request...")
-                    eol = time.time() + ttl
-                    self.on_get(log, GetItem(client, label, after, ttp, eol))
-                    asyncio.sleep(ttl / ttp)
+                    get.eol = time.time() + ttl
+                    self.on_get(log, get)
+                    await asyncio.sleep(ttl / tpf)
             task = asyncio.create_task(subscribe())
             assert await self.content_store[label].fulfil
             task.cancel()
@@ -364,7 +334,7 @@ class Node:
     async def set(self, label: str, data: str):
         log = ContextLogger(self.log, f"set {label}")
         log.info("Publishing to %s...", label)
-        self.on_set(log, SetItem(label, data, time.time()))
+        self.on_set(log, SetItem(label, data, time.time(), 0))
 
     # Batching
 
@@ -411,6 +381,8 @@ class Node:
                 log.warning("Dropping duplicate advert for %s", advert.client)
                 continue
 
+            # TODO: Update advert scores to reflect perceived congestion
+
             new_items = items + [advert]
             new_msg = Message(new_items)
             new_msg_bytes = new_msg.to_bytes()
@@ -450,14 +422,14 @@ class Node:
         await writer.drain()
         writer.close()
         self.log.debug(
-            "Sent %s: %s (%s bytes)",
+            "Sent %s items: %s (%s bytes)",
             addr, len(msg.items), len(msg_bytes))
 
     def broadcast_msg(self, msg: Message):
         msg_bytes = msg.to_bytes()
         self.udp.sendto(msg_bytes, ("<broadcast>", self.dport))
         self.log.debug(
-            "Broadcast: %s (%s bytes)",
+            "Broadcasted items: %s (%s bytes)",
             len(msg.items), len(msg_bytes))
 
     # Network event handlers
@@ -514,9 +486,11 @@ class Node:
         for item in msg.items:
             if type(item) is PeerItem:
                 self.on_peer(log, addr, item)
+        for item in msg.items:
             if type(item) is AdvertItem:
                 self.on_advert(log, addr, item)
-            elif type(item) is GetItem:
+        for item in msg.items:
+            if type(item) is GetItem:
                 self.on_get(log, item)
             elif type(item) is SetItem:
                 self.on_set(log, item)
@@ -536,20 +510,25 @@ class Node:
         # Check for previous peer entry
         try:
             self.peers[addr].timer.cancel()
+            log.debug("Refreshed peer")
         except KeyError:
             log.info("New peer")
-            self.peers[addr] = Peer()
 
         # Insert new peer entry with timeout
         def on_timeout():
             log.info("Timed out peer")
             del self.peers[addr]
-        timer = do_after(peer.eol, on_timeout)
-        self.peers[addr].eol = peer.eol
-        self.peers[addr].timer = timer
+            for client, entry in self.routes.items():
+                if entry["addr"] == addr:
+                    del self.routes[client]
+        self.peers[addr] = peer
+        self.peers[addr].timer = do_after(peer.eol, on_timeout)
 
     def on_advert(self, log: Logger, addr: Addr, advert: AdvertItem):
         log = ContextLogger(log, f"{advert.client}")
+        if addr not in self.peers:
+            logging.warning("Received advert from unknown peer")
+            self.on_peer(log, addr, PeerItem(advert.eol))
 
         # Check for previous entry
         try:
@@ -557,21 +536,48 @@ class Node:
                 log.debug("Ignored old advert")
                 return
             self.clients[advert.client].timer.cancel()
+            previous_labels = self.clients[advert.client].labels
+            log.debug("Refreshed client")
         except KeyError:
+            previous_labels = []
             log.info("New client")
-            self.clients[advert.client] = Client()
-            # TODO(optimisation): use batching+retrying
-            # TODO(v0.2): forward interests to new clients
 
         # Insert new entry with timeout
         def on_timeout():
             log.info("Timed out client")
             del self.clients[advert.client]
-        timer = do_after(advert.eol, on_timeout)
-        self.clients[advert.client].eol = advert.eol
-        self.clients[advert.client].timer = timer
+            del self.routes[advert.client]
+        self.clients[advert.client] = advert
+        self.clients[advert.client].timer = do_after(advert.eol, on_timeout)
 
-        # Add advert
+        # Update routes to client
+        if advert.client not in self.routes:
+            self.routes[advert.client] = []
+        for idx, route in enumerate(self.routes[advert.client]):
+            if route["addr"] == addr:
+                self.routes[advert.client][idx]["score"] = advert.score - 1
+                break
+        else:
+            new_route = {"addr": addr, "score": advert.score - 1}
+            self.routes[advert.client].append(new_route)
+        self.routes[advert.client].sort(
+            key=lambda route: route["score"], reverse=True)
+
+        # Additions to listed published labels results in interest propagation
+        # TODO(optimisation): use batching+retrying
+        new_interests_to_be_pushed = []
+        for label in advert.labels:
+            if label not in previous_labels:
+                if label in self.interests:
+                    for interest in self.interests[label].values():
+                        new_interests_to_be_pushed.append(interest)
+        if len(new_interests_to_be_pushed) != 0:
+            log.info("Notifying client of new interests")
+            msg = Message(new_interests_to_be_pushed)
+            best_peer = self.routes[advert.client][0]["addr"]  # TODO: check
+            asyncio.create_task(self.send_msg(best_peer, msg))
+
+        # Add advert to queue
         deadline = time.time() + advert.ttp
         self.adverts_queue.put_nowait((deadline, advert))
         self.is_adverts_queue_changed = True
@@ -583,33 +589,38 @@ class Node:
     def on_get(self, log: Logger, g: GetItem):
         log = ContextLogger(log, f"get {g.label}>{g.after}@{g.client}")
 
-        # TODO(v0.2): interests
-
         # Check for previous entry
         if g.label not in self.interests:
-            log.info("New interest label")
+            log.info("New interest in label")
             self.interests[g.label] = {}
         try:
             if g.eol <= self.interests[g.label][g.client].eol:
                 log.debug("Ignored old interest")
                 return
             self.interests[g.label][g.client].timer.cancel()
+            log.debug("Refreshed interest")
         except KeyError:
-            log.info("New interest label client")
-            self.interests[g.label][g.client] = {}
+            log.info("New interest from client")
 
         # Insert new entry with timeout
         def on_timeout():
-            log.info("Timed out")
+            log.info("Timed out interest")
             del self.interests[g.label][g.client]
             if len(self.interests[g.label]) == 0:
-                log.info("No more interest in %s", g.label)
+                log.info("No more interest for label")
                 del self.interests[g.label]
-        timer = do_after(g.eol, on_timeout)
-        self.interests[g.label][g.client].eol = g.eol
-        self.interests[g.label][g.client].timer = timer
+        self.interests[g.label][g.client] = g
+        self.interests[g.label][g.client].timer = do_after(g.eol, on_timeout)
 
-        # TODO(v0.2) forward interests towards relevant clients with batching
+        # Propagate interest towards known publishers
+        # TODO(optimisation) use batching+retrying
+        peers = set()
+        for client in self.clients:
+            if g.label in self.clients[client].labels:
+                if client in self.routes and len(self.routes[client]) > 0:
+                    peers.add(self.routes[client][0]["addr"])
+        for peer in peers:
+            asyncio.create_task(self.send_msg(peer, Message([g])))
 
     def on_set(self, log: Logger, s: SetItem):
         log = ContextLogger(log, f"set {s.label}@{s.at}")
@@ -618,20 +629,22 @@ class Node:
             if self.content_store[s.label].at >= s.at:
                 log.debug("Ignored old publications")
                 return
+            last = self.content_store[s.label].last
+            fulfil = self.content_store[s.label].fulfil
         except KeyError:
             log.debug("New label in content store")
-            self.content_store[s.label] = Content()
+            last = 0
+            fulfil = None
 
-        self.content_store[s.label].data = s.data
-        self.content_store[s.label].at = s.at
+        self.content_store[s.label] = s
+        self.content_store[s.label].last = last
         log.debug("Updated local content store")
 
-        # TODO(optimisation) use batching+retrying with ttp set to interest ttp
-        # TODO(v0.2) send towards only interested clients
-        msg = Message([s])
-        for peer in self.peers:
-            asyncio.create_task(self.send_msg(peer, msg))
-
         # Fulfil any local interests (applications waiting in .get())
-        if self.content_store[s.label].fulfil is not None:
-            self.content_store[s.label].fulfil.set_result(True)
+        if fulfil is not None:
+            fulfil.set_result(True)
+
+        # TODO(v0.2) send towards only interested clients
+        # TODO(optimisation) use batching+retrying with ttp set to interest ttp
+        for peer in self.peers:
+            asyncio.create_task(self.send_msg(peer, Message([s])))
