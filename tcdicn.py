@@ -6,10 +6,11 @@ import queue
 import signal
 import socket
 import time
+from abc import ABC, abstractmethod
 from asyncio import Task, Future, DatagramTransport, StreamWriter, StreamReader
-from logging import Logger, LoggerAdapter
 from json import JSONDecodeError
-from typing import Dict, Tuple, List
+from logging import Logger, LoggerAdapter
+from typing import Dict, Tuple, List, Optional, TypeVar, Union
 
 # The version of this protocol implementation is included in all communications
 # This allows peers which implement one or more versions to react appropriately
@@ -33,11 +34,17 @@ DEADLINE_EXT: float = 10
 # Peers are identified solely by their host and port number
 Addr = Tuple[str, int]
 
+LOG_T = TypeVar('LOG_T', bound=Union[Logger, LoggerAdapter])
+
 
 # Prepend logger output with some useful context
 class ContextLogger(LoggerAdapter):
+    def __init__(self, logger, prefix: str):
+        super().__init__(logger)
+        self.prefix: str = prefix
+
     def process(self, msg, kwargs):
-        return f"{self.extra} | {msg}", kwargs
+        return f"{self.prefix} | {msg}", kwargs
 
 
 # Convert a UNIX timestamp into a human readable seconds since string
@@ -51,6 +58,7 @@ def do_after(eol: float, callback) -> Task:
     async def on_timeout():
         await asyncio.sleep(eol - time.time())
         callback()
+
     return asyncio.create_task(on_timeout())
 
 
@@ -59,9 +67,15 @@ def do_after(eol: float, callback) -> Task:
 # JSON field names are shrunk to help pack more information into UDP datagrams
 
 # This class is just define a common type between MessageItems
-class MessageItem:
-    def to_dict() -> dict: raise NotImplementedError
-    def from_dict(d: dict): raise NotImplementedError
+class MessageItem(ABC):
+    @abstractmethod
+    def to_dict(self) -> dict:
+        ...
+
+    @staticmethod
+    @abstractmethod
+    def from_dict(d: dict) -> "MessageItem":
+        ...
 
 
 # Lets other nodes know what time your End Of Life (EOL) is
@@ -70,7 +84,7 @@ class MessageItem:
 class PeerItem(MessageItem):
     def __init__(self, eol: float):
         self.eol = eol
-        self.timer: Task = None  # Used internal within nodes to timeout entry
+        self.timer: Optional[Task] = None  # Used internal within nodes to timeout entry
 
     def to_dict(self) -> dict:
         return {
@@ -78,6 +92,7 @@ class PeerItem(MessageItem):
             "e": self.eol,
         }
 
+    @staticmethod
     def from_dict(d: dict):
         if d["t"] != "p":
             raise ValueError("Not a peer message item")
@@ -98,7 +113,7 @@ class AdvertItem(MessageItem):
         self.score = score
         self.ttp = ttp
         self.eol = eol
-        self.timer: Task = None  # Used internal within nodes to timeout entry
+        self.timer: Optional[Task] = None  # Used internal within nodes to timeout entry
 
     def to_dict(self) -> dict:
         return {
@@ -110,6 +125,7 @@ class AdvertItem(MessageItem):
             "e": self.eol,
         }
 
+    @staticmethod
     def from_dict(d: dict):
         if d["t"] != "a":
             raise ValueError("Not an advert message item")
@@ -142,6 +158,7 @@ class GetItem(MessageItem):
             "e": self.eol,
         }
 
+    @staticmethod
     def from_dict(d: dict):
         if d["t"] != "g":
             raise ValueError("Not a get request message item")
@@ -151,9 +168,9 @@ class GetItem(MessageItem):
 # Request to cache and propagate the contained data towards interested clients
 # Time To Propagate (TTP) demands that nodes wait no more than TTP seconds
 # before propagating this SetItem towards subscribers (due to batching reasons)
-class SetItem:
+class SetItem(MessageItem):
     def __init__(
-            self, label: str, data: str,
+            self, label: str, data: Optional[str],
             at: float, dst: List[Tuple[float, str]]):
         self.label = label
         self.data = data
@@ -161,7 +178,7 @@ class SetItem:
         self.dst = dst
         # Used internal within nodes to allow .get() to always return new data
         self.last: float = 0
-        self.fulfil: Future = None
+        self.fulfil: Optional[Future] = None
 
     def to_dict(self) -> dict:
         return {
@@ -214,6 +231,11 @@ class Message:
 # to send interests and data to only places that it is needed
 class Node:
     def __init__(self):
+        self.tcp = None
+        self.advert = None
+        self.dport = None
+        self.port = None
+        self.udp = None
         self.log = logging.getLogger(__name__)
         self.peers: Dict[Addr, PeerItem] = {}  # IP>Peer info
         self.clients: Dict[str, AdvertItem] = {}  # ID>Client info
@@ -261,7 +283,7 @@ class Node:
 
         # Start UDP and TCP server
         self.udp, _ = await loop.create_datagram_endpoint(
-            UdpProtocol,
+            lambda: UdpProtocol(),
             local_addr=("0.0.0.0", self.port),
             allow_broadcast=True)
         self.tcp = await asyncio.start_server(
@@ -292,6 +314,7 @@ class Node:
             reg_task.cancel()
             self.udp.close()
             self.tcp.close()
+
         for sig in [signal.SIGHUP, signal.SIGTERM, signal.SIGINT]:
             loop.add_signal_handler(sig, shutdown)
 
@@ -342,6 +365,7 @@ class Node:
                         self.schedule_batch_send()
                         self.is_send_queue_changed = False
                     await asyncio.sleep(ttl / tpf)
+
             task = asyncio.create_task(subscribe())
             assert await self.content_store[label].fulfil
             task.cancel()
@@ -404,7 +428,7 @@ class Node:
 
             try:
                 peer = routes[0]["addr"] if self.is_main \
-                        else ("127.0.0.1", self.dport)  # Non-main push to main
+                    else ("127.0.0.1", self.dport)  # Non-main push to main
             except IndexError:
                 if client in self.routes:
                     routes = self.routes[client]
@@ -500,7 +524,7 @@ class Node:
 
             items = new_items
             msg = new_msg
-            msg_bytes = new_msg_bytes
+            msg_bytes = new_msg_bytes  # Not used
             msg_len = new_msg_len
 
         # Send it!
@@ -575,7 +599,7 @@ class Node:
         self.on_message(log, addr, data)
 
     # Common logic for handling both TCP and UDP messages
-    def on_message(self, log: Logger, addr: Addr, data: bytes):
+    def on_message(self, log: LOG_T, addr: Addr, data: bytes):
 
         # Parse message
         try:
@@ -589,15 +613,15 @@ class Node:
 
         # Handle message items appropriately
         for item in msg.items:
-            if type(item) is PeerItem:
+            if isinstance(item, PeerItem):
                 self.on_peer(log, addr, item)
         for item in msg.items:
-            if type(item) is AdvertItem:
+            if isinstance(item, AdvertItem):
                 self.on_advert(log, addr, item)
         for item in msg.items:
-            if type(item) is GetItem:
+            if isinstance(item, GetItem):
                 self.on_get(log, item)
-            elif type(item) is SetItem:
+            elif isinstance(item, SetItem):
                 self.on_set(log, item)
 
         # Reschedule next batches if necessary
@@ -612,7 +636,7 @@ class Node:
     # If called directly, it is your responsibility to refresh any
     # scheduled tasks that should be affected (see on_message)
 
-    def on_peer(self, log: Logger, addr: Addr, peer: PeerItem):
+    def on_peer(self, log: LOG_T, addr: Addr, peer: PeerItem):
         log = ContextLogger(log, "peer")
 
         # Check for previous peer entry
@@ -631,6 +655,7 @@ class Node:
                     if route["addr"] == addr:
                         del self.routes[client][idx]
                         break
+
         self.peers[addr] = peer
         self.peers[addr].timer = do_after(peer.eol, on_timeout)
 
@@ -673,6 +698,7 @@ class Node:
             log.info("Timed out client")
             del self.clients[advert.client]
             del self.routes[advert.client]
+
         self.clients[advert.client] = advert
         self.clients[advert.client].timer = do_after(advert.eol, on_timeout)
 
@@ -697,7 +723,7 @@ class Node:
         # TODO(safely): cooldown
         # TODO(safely): issue warning if duplicate name spotted
 
-    def on_get(self, log: Logger, g: GetItem):
+    def on_get(self, log: LOG_T, g: GetItem):
         log = ContextLogger(log, f"get {g.label}>{g.after}@{g.client}")
 
         # Check for previous interest entry
@@ -720,6 +746,7 @@ class Node:
             if len(self.interests[g.label]) == 0:
                 log.info("No more interest for label")
                 del self.interests[g.label]
+
         self.interests[g.label][g.client] = g
         self.interests[g.label][g.client].timer = do_after(g.eol, on_timeout)
 
@@ -741,7 +768,7 @@ class Node:
             self.is_send_queue_changed = True
             log.debug("New main get deadline: %s", to_human(deadline))
 
-    def on_set(self, log: Logger, s: SetItem):
+    def on_set(self, log: LOG_T, s: SetItem):
         log = ContextLogger(log, f"set {s.label}@{s.at}")
         if s.label not in self.interests:
             log.warning("Received set for an unknown interest")
