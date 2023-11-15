@@ -31,6 +31,18 @@ services:
 
 networks:
   ab:
+    ipam:
+      config:
+        - subnet: 172.51.0.0/24
   bc:
+    ipam:
+      config:
+        - subnet: 172.52.0.0/24
   cd:
+    ipam:
+      config:
+        - subnet: 172.53.0.0/24
   da:
+    ipam:
+      config:
+        - subnet: 172.54.0.0/24

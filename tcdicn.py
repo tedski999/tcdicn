@@ -1,4 +1,5 @@
 import asyncio
+import ipaddress
 import json
 import logging
 import queue
@@ -418,9 +419,14 @@ class Node:
             "Sent %s items: %s (%s bytes)",
             addr, len(msg.items), len(msg_bytes))
 
+    # TODO(optimisation): use multicast instead of broadcast
     def broadcast_msg(self, msg: Message):
         msg_bytes = msg.to_bytes()
-        self.udp.sendto(msg_bytes, ("<broadcast>", self.dport))
+        host = socket.gethostname()
+        addrs = socket.getaddrinfo(host, self.port, proto=socket.IPPROTO_UDP)
+        for (_, _, _, _, (host, port)) in addrs:
+            net = ipaddress.IPv4Network(host + "/24", False)  # NOTE: hardcoded
+            self.udp.sendto(msg_bytes, (str(net.broadcast_address), port))
         self.log.debug(
             "Broadcasted items: %s (%s bytes)",
             len(msg.items), len(msg_bytes))
