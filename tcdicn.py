@@ -21,6 +21,12 @@ VERSION: str = "0.2-dev"
 # This minimises the chance of peer advert broadcasts being dropped/lost
 BROADCAST_CAPACITY: int = 512
 
+# Seconds to wait for a TCP connection to be established before giving up
+TCP_TIMEOUT: float = 2
+
+# Seconds to wait before retrying after exhausting all known routes to client
+DEADLINE_EXT: float = 10
+
 # Peers are identified solely by their host and port number
 Addr = Tuple[str, int]
 
@@ -217,6 +223,10 @@ class Node:
         self.broadcast_queue = queue.PriorityQueue()
         self.is_broadcast_queue_changed = False
 
+        self.batch_send_task = None
+        self.send_queue = queue.PriorityQueue()
+        self.is_send_queue_changed = False
+
     # Starts all tasks needed for the node to communicate with the network
     # Send the process a SIGINT or cancel the coroutine to shutdown the node
     async def start(
@@ -346,6 +356,81 @@ class Node:
 
     # Batching
 
+    def schedule_batch_send(self):
+
+        # Check for previous scheduled batch
+        if self.batch_send_task is not None:
+            self.batch_send_task.cancel()
+            self.batch_send_task = None
+
+        # Find next item deadline
+        try:
+            deadline, client, routes, item = self.send_queue.get_nowait()
+            self.send_queue.put_nowait((deadline, client, routes, item))
+        except queue.Empty:
+            return
+
+        # Schedule new time
+        now = time.time()
+        eol = (deadline - now) / 2 + now
+        task = do_after(eol, lambda: asyncio.create_task(self.batch_send()))
+        self.batch_send_task = task
+        self.log.debug("Scheduled next send batch: %s", to_human(eol))
+
+    async def batch_send(self):
+        log = ContextLogger(self.log, "tcp batch")
+
+        accepted = []
+        rejects = []
+        addr = None
+
+        # Include all items in queue destined to the next peer
+        while True:
+            try:
+                deadline, client, routes, item = self.send_queue.get_nowait()
+            except queue.Empty:
+                break
+
+            try:
+                peer = routes[0]["addr"]
+            except IndexError:
+                if client in self.routes:
+                    routes = self.routes[client]
+                rejects.append((deadline + DEADLINE_EXT, client, routes, item))
+                log.warning("No route to %s", client)
+                continue
+
+            if addr is None:
+                addr = peer
+                log.debug("Batch destined to %s (for %s)", addr, client)
+
+            if peer == addr:
+                accepted.append((deadline, client, routes, item))
+                log.debug("Added %s", type(item).__name__)
+            else:
+                rejects.append((deadline, client, routes, item))
+                log.debug("Rejected %s", type(item).__name__)
+
+        # Put everything else back
+        for reject in rejects:
+            self.send_queue.put_nowait(reject)
+        items = [item for _, _, _, item in accepted]
+
+        # Send it!
+        if addr is not None:
+            try:
+                await self.send_msg(addr, Message(items))
+            except OSError:
+                log.warning("Unable to contact %s", addr)
+                for deadline, client, routes, item in accepted:
+                    self.send_queue.put_nowait(
+                        (deadline, client, routes[1:], item))
+        else:
+            log.warning("There was nothing to send")
+
+        # Schedule next batch
+        self.schedule_batch_send()
+
     def schedule_batch_broadcast(self):
 
         # Check for previous scheduled batch
@@ -368,7 +453,7 @@ class Node:
         self.log.debug("Scheduled next broadcast batch: %s", to_human(eol))
 
     def batch_broadcast(self):
-        log = ContextLogger(self.log, "bc batch")
+        log = ContextLogger(self.log, "udp batch")
 
         items = []
         msg = Message([])
@@ -418,7 +503,8 @@ class Node:
 
     async def send_msg(self, addr: Addr, msg: Message):
         msg_bytes = msg.to_bytes()
-        _, writer = await asyncio.open_connection(addr[0], addr[1])
+        connection = asyncio.open_connection(addr[0], addr[1])
+        _, writer = await asyncio.wait_for(connection, timeout=TCP_TIMEOUT)
         writer.write(msg_bytes)
         await writer.drain()
         writer.close()
@@ -501,10 +587,13 @@ class Node:
             elif type(item) is SetItem:
                 self.on_set(log, item)
 
-        # Reschedule next adverts forwarding batch if necessary
+        # Reschedule next batches if necessary
         if self.is_broadcast_queue_changed:
             self.schedule_batch_broadcast()
             self.is_broadcast_queue_changed = False
+        if self.is_send_queue_changed:
+            self.schedule_batch_send()
+            self.is_send_queue_changed = False
 
     # Handlers for each MessageItem type
     # If called directly, it is your responsibility to refresh any
@@ -524,10 +613,10 @@ class Node:
         def on_timeout():
             log.info("Timed out peer")
             del self.peers[addr]
-            for client, entries in list(self.routes.items()):
-                for entry in entries:
-                    if entry["addr"] == addr:
-                        del self.routes[client]
+            for client, entries in self.routes.items():
+                for idx, route in enumerate(self.routes[client]):
+                    if route["addr"] == addr:
+                        del self.routes[client][idx]
                         break
         self.peers[addr] = peer
         self.peers[addr].timer = do_after(peer.eol, on_timeout)
@@ -537,6 +626,22 @@ class Node:
         if addr not in self.peers:
             log.warning("Received advert from unknown peer")
             self.on_peer(log, addr, PeerItem(advert.eol))
+        if self.advert is not None and self.advert.client == advert.client:
+            log.debug("Ignored advert for ourselves")
+            return
+
+        # Update routes to client via peer
+        if advert.client not in self.routes:
+            self.routes[advert.client] = []
+        for idx, route in enumerate(self.routes[advert.client]):
+            if route["addr"] == addr:
+                self.routes[advert.client][idx]["score"] = advert.score
+                break
+        else:
+            new_route = {"addr": addr, "score": advert.score}
+            self.routes[advert.client].append(new_route)
+        self.routes[advert.client].sort(
+            key=lambda route: route["score"], reverse=True)
 
         # Check for previous client advert entry
         try:
@@ -558,31 +663,17 @@ class Node:
         self.clients[advert.client] = advert
         self.clients[advert.client].timer = do_after(advert.eol, on_timeout)
 
-        # Update routes to client
-        if advert.client not in self.routes:
-            self.routes[advert.client] = []
-        for idx, route in enumerate(self.routes[advert.client]):
-            if route["addr"] == addr:
-                self.routes[advert.client][idx]["score"] = advert.score
-                break
-        else:
-            new_route = {"addr": addr, "score": advert.score}
-            self.routes[advert.client].append(new_route)
-        self.routes[advert.client].sort(
-            key=lambda route: route["score"], reverse=True)
-
         # Additions to listed published labels results in interest propagation
-        # TODO(optimisation): use batching+retrying
-        new_interests_to_be_pushed = []
         for label in advert.labels:
             if label not in previous_labels and label in self.interests:
                 for interest in self.interests[label].values():
-                    new_interests_to_be_pushed.append(interest)
-        if len(new_interests_to_be_pushed) != 0:
-            log.info("Notifying client of new interests")
-            msg = Message(new_interests_to_be_pushed)
-            best_peer = self.routes[advert.client][0]["addr"]  # TODO: check
-            asyncio.create_task(self.send_msg(best_peer, msg))
+                    deadline = time.time() + interest.ttp
+                    routes = self.routes[advert.client] \
+                        if advert.client in self.routes else []
+                    self.send_queue.put_nowait(
+                        (deadline, advert.client, routes, interest))
+                    self.is_send_queue_changed = True
+                    log.debug("New get deadline: %s", to_human(deadline))
 
         # Add advert to queue
         deadline = time.time() + advert.ttp
@@ -593,7 +684,6 @@ class Node:
         # TODO(safely): cooldown
         # TODO(safely): issue warning if duplicate name spotted
 
-    # TODO(optimisation): propagation doesnt work first try in some weird cases
     def on_get(self, log: Logger, g: GetItem):
         log = ContextLogger(log, f"get {g.label}>{g.after}@{g.client}")
 
@@ -620,21 +710,21 @@ class Node:
         self.interests[g.label][g.client] = g
         self.interests[g.label][g.client].timer = do_after(g.eol, on_timeout)
 
-        # Propagate interest towards known publishers
-        # TODO(optimisation) use batching+retrying
-        peers = set()
+        # Add gets towards known publishers to queue
         for client in self.clients:
             if g.label in self.clients[client].labels:
-                if client in self.routes and len(self.routes[client]) > 0:
-                    peers.add(self.routes[client][0]["addr"])
-        for peer in peers:
-            asyncio.create_task(self.send_msg(peer, Message([g])))
+                if self.advert is None or self.advert.client != client:
+                    deadline = time.time() + g.ttp
+                    routes = self.routes[client] \
+                        if client in self.routes else []
+                    self.send_queue.put_nowait((deadline, client, routes, g))
+                    self.is_send_queue_changed = True
+                    log.debug("New get deadline: %s", to_human(deadline))
 
     def on_set(self, log: Logger, s: SetItem):
         log = ContextLogger(log, f"set {s.label}@{s.at}")
         if s.label not in self.interests:
             log.warning("Received set for an unknown interest")
-            self.interests[s.label] = {}
 
         # Check for previous content entry
         try:
@@ -657,9 +747,14 @@ class Node:
         if fulfil is not None:
             fulfil.set_result(True)
 
-        # TODO(optimisation) use batching+retrying with ttp set to interest ttp
+        # Add sets towards interested clients to queue
         for ttp, client in s.dst:
             if self.advert is None or self.advert.client != client:
-                if client in self.routes and len(self.routes[client]) > 0:
-                    best_peer = self.routes[client][0]["addr"]  # TODO: check
-                    asyncio.create_task(self.send_msg(best_peer, Message([s])))
+                deadline = time.time() + ttp
+                new_set_item = SetItem(s.label, s.data, s.at, [(ttp, client)])
+                routes = self.routes[client] \
+                    if client in self.routes else []
+                self.send_queue.put_nowait(
+                    (deadline, client, routes, new_set_item))
+                self.is_send_queue_changed = True
+                log.debug("New set deadline: %s", to_human(deadline))
