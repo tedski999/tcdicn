@@ -27,6 +27,9 @@ MAX_SCORE = 10000
 # Seconds to wait for a TCP connection to be established before giving up
 TCP_TIMEOUT: float = 2
 
+# Seconds to allow for TCP stream to stay open
+DATA_TIMEOUT: float = 2
+
 # Seconds to wait before retrying after exhausting all known routes to client
 DEADLINE_EXT: float = 10
 
@@ -563,9 +566,11 @@ class Node:
         log.debug("New connection")
 
         # Read entire message
-        # TODO(safety): limit amount and time
         try:
-            data = await reader.read()
+            data = await asyncio.wait_for(reader.read(), timeout=DATA_TIMEOUT)
+        except asyncio.TimeoutError:
+            log.warning("Read timed out")
+            return
         except Exception as exc:
             log.warning("Error reading: %s", exc)
             return
@@ -742,7 +747,8 @@ class Node:
             log.debug("New main get deadline: %s", to_human(deadline))
 
         # If we can fulfil this get, add sets toward client to queue
-        if g.label in self.content_store:
+        if g.label in self.content_store \
+                and self.content_store[g.label].at > g.after:
             s = self.content_store[g.label]
             s.dst = [(g.ttp, g.client)]
             deadline = time.time() + g.ttp
