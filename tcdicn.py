@@ -21,6 +21,9 @@ VERSION: str = "0.2"
 # This minimises the chance of peer advert broadcasts being dropped/lost
 BROADCAST_CAPACITY: int = 512
 
+# Score clients should give themselves
+MAX_SCORE = 10000
+
 # Seconds to wait for a TCP connection to be established before giving up
 TCP_TIMEOUT: float = 2
 
@@ -235,9 +238,10 @@ class Node:
             client: dict = None):
         self.port = port
         self.dport = dport
+        self.is_main = (port == dport)
 
         self.advert = None if client is None else AdvertItem(
-            client["name"], client["labels"], 1000, client["ttp"], 0)
+            client["name"], client["labels"], MAX_SCORE, client["ttp"], 0)
 
         loop = asyncio.get_running_loop()
 
@@ -334,6 +338,9 @@ class Node:
                     self.on_get(log, GetItem(
                         self.advert.client, label,
                         after, ttp, time.time() + ttl))
+                    if self.is_send_queue_changed:
+                        self.schedule_batch_send()
+                        self.is_send_queue_changed = False
                     await asyncio.sleep(ttl / tpf)
             task = asyncio.create_task(subscribe())
             assert await self.content_store[label].fulfil
@@ -354,6 +361,9 @@ class Node:
         else:
             log.debug("Nobody is interested")
         self.on_set(log, SetItem(label, data, time.time(), dst))
+        if self.is_send_queue_changed:
+            self.schedule_batch_send()
+            self.is_send_queue_changed = False
 
     # Batching
 
@@ -393,7 +403,8 @@ class Node:
                 break
 
             try:
-                peer = routes[0]["addr"]
+                peer = routes[0]["addr"] if self.is_main \
+                        else ("127.0.0.1", self.dport)  # Non-main push to main
             except IndexError:
                 if client in self.routes:
                     routes = self.routes[client]
@@ -403,7 +414,7 @@ class Node:
 
             if addr is None:
                 addr = peer
-                log.debug("Batch destined to %s (for %s)", addr, client)
+                log.debug("Batch destined to %s", addr)
 
             if peer == addr:
                 accepted.append((deadline, client, routes, item))
@@ -423,9 +434,10 @@ class Node:
                 await self.send_msg(addr, Message(items))
             except OSError:
                 log.warning("Unable to contact %s", addr)
+                ext = 0 if self.is_main else DEADLINE_EXT
                 for deadline, client, routes, item in accepted:
                     self.send_queue.put_nowait(
-                        (deadline, client, routes[1:], item))
+                        (deadline + ext, client, routes[1:], item))
         else:
             log.warning("There was nothing to send")
 
@@ -722,6 +734,13 @@ class Node:
                     self.is_send_queue_changed = True
                     log.debug("New get deadline: %s", to_human(deadline))
 
+        # If we are a non-main node, we need to push to the device's main node
+        if not self.is_main:
+            deadline = time.time() + g.ttp
+            self.send_queue.put_nowait((deadline, None, [], g))
+            self.is_send_queue_changed = True
+            log.debug("New main get deadline: %s", to_human(deadline))
+
     def on_set(self, log: Logger, s: SetItem):
         log = ContextLogger(log, f"set {s.label}@{s.at}")
         if s.label not in self.interests:
@@ -758,4 +777,3 @@ class Node:
                 self.send_queue.put_nowait(
                     (deadline, client, routes, new_set_item))
                 self.is_send_queue_changed = True
-                log.debug("New set deadline: %s", to_human(deadline))
