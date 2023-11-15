@@ -18,7 +18,7 @@ VERSION: str = "0.2-dev"
 # broadcasts, which limits the number of client adverts sent at once
 # Generally a good idea set to less than the Maximum Transmission Unit (MTU)
 # This minimises the chance of peer advert broadcasts being dropped/lost
-ADVERT_CAPACITY: int = 512
+BROADCAST_CAPACITY: int = 512
 
 # Peers are identified solely by their host and port number
 Addr = Tuple[str, int]
@@ -210,9 +210,9 @@ class Node:
         # TODO(optimisation): write to/read from disk
         self.content_store: Dict[str, SetItem] = {}  # Label >data
 
-        self.batch_fwd_adverts_task = None
-        self.adverts_queue = queue.PriorityQueue()
-        self.is_adverts_queue_changed = False
+        self.batch_broadcast_task = None
+        self.broadcast_queue = queue.PriorityQueue()
+        self.is_broadcast_queue_changed = False
 
     # Starts all tasks needed for the node to communicate with the network
     # Send the process a SIGINT or cancel the coroutine to shutdown the node
@@ -272,7 +272,7 @@ class Node:
 
         # Shutdown if we receive a signal
         def shutdown():
-            logging.info("Shutting down...")
+            self.log.info("Shutting down...")
             reg_task.cancel()
             self.udp.close()
             self.tcp.close()
@@ -282,11 +282,11 @@ class Node:
         # Wait until cancelled or shutdown
         try:
             async with self.tcp:
-                logging.info("Up and listening on :%s", self.port)
+                self.log.info("Up and listening on :%s", self.port)
                 await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         except asyncio.exceptions.CancelledError:
-            logging.debug("Node tasks cancelled")
-        logging.info("Goodbye :)")
+            self.log.debug("Node tasks cancelled")
+        self.log.info("Goodbye :)")
 
     # Subscribes to label and returns first new value received
     # Repeats request every TTL/TPF seconds until successful or cancelled
@@ -316,11 +316,11 @@ class Node:
             # Keep trying until either success or this coroutine is cancelled
             async def subscribe():
                 after = self.content_store[label].last
-                get = GetItem(self.advert.client, label, after, ttp, 0)
                 while True:
                     log.debug("Sending get request...")
-                    get.eol = time.time() + ttl
-                    self.on_get(log, get)
+                    self.on_get(log, GetItem(
+                        self.advert.client, label,
+                        after, ttp, time.time() + ttl))
                     await asyncio.sleep(ttl / tpf)
             task = asyncio.create_task(subscribe())
             assert await self.content_store[label].fulfil
@@ -338,80 +338,73 @@ class Node:
 
     # Batching
 
-    def schedule_batch_fwd_adverts(self):
+    def schedule_batch_broadcast(self):
 
         # Check for previous scheduled batch
-        if self.batch_fwd_adverts_task is not None:
-            self.batch_fwd_adverts_task.cancel()
-            self.batch_fwd_adverts_task = None
+        if self.batch_broadcast_task is not None:
+            self.batch_broadcast_task.cancel()
+            self.batch_broadcast_task = None
 
-        # Find next advert forwarding deadline
+        # Find next item deadline
         try:
-            deadline, advert = self.adverts_queue.get_nowait()
-            self.adverts_queue.put_nowait((deadline, advert))
+            deadline, item = self.broadcast_queue.get_nowait()
+            self.broadcast_queue.put_nowait((deadline, item))
         except queue.Empty:
             return
 
         # Schedule new time
         now = time.time()
         eol = (deadline - now) / 2 + now
-        task = do_after(eol, self.batch_fwd_adverts)
-        self.batch_fwd_adverts_task = task
-        self.log.debug(
-            "Scheduled next adverts fwd batch: %s (for %s)",
-            to_human(eol), advert.client)
+        task = do_after(eol, self.batch_broadcast)
+        self.batch_broadcast_task = task
+        self.log.debug("Scheduled next broadcast batch: %s", to_human(eol))
 
-    def batch_fwd_adverts(self):
-        log = ContextLogger(self.log, "adverts fwd")
+    def batch_broadcast(self):
+        log = ContextLogger(self.log, "bc batch")
 
         items = []
         msg = Message([])
         msg_bytes = msg.to_bytes()
         msg_len = len(msg_bytes)
-        clients = set()
 
-        # Add as many pending adverts to this broadcast as we safely can
+        # Add as many pending items to this broadcast as we safely can
         # Force at least one if this is any to prevent queue blocking
         while True:
             try:
-                deadline, advert = self.adverts_queue.get_nowait()
+                deadline, item = self.broadcast_queue.get_nowait()
             except queue.Empty:
                 break
-            if advert.client in clients:
-                log.warning("Dropping duplicate advert for %s", advert.client)
-                continue
 
-            # TODO: Update advert scores to reflect perceived congestion
+            # TODO(optimisation): score based on perceived congestion
+            # for now, use some randomness to diversify routes taken
+            import random
+            if type(item) is AdvertItem:
+                item.score -= 1 + random.uniform(0, 0.5)
 
-            new_items = items + [advert]
+            new_items = items + [item]
             new_msg = Message(new_items)
             new_msg_bytes = new_msg.to_bytes()
             new_msg_len = len(new_msg_bytes)
             diff = new_msg_len - msg_len
-            if len(items) != 0 and new_msg_len >= ADVERT_CAPACITY:
-                log.debug("Refused %s advert (+%s bytes)", advert.client, diff)
-                self.adverts_queue.put_nowait((deadline, advert))
+            if len(items) != 0 and new_msg_len >= BROADCAST_CAPACITY:
+                log.debug("Refused %s (+%s bytes)", type(item).__name__, diff)
+                self.broadcast_queue.put_nowait((deadline, item))
                 break
-            log.debug("Added %s advert (+%s bytes)", advert.client, diff)
+            log.debug("Added %s (+%s bytes)", type(item).__name__, diff)
 
             items = new_items
             msg = new_msg
             msg_bytes = new_msg_bytes
             msg_len = new_msg_len
-            clients.add(advert.client)
 
         # Send it!
         try:
             self.broadcast_msg(msg)
         except OSError as e:
-            log.warning("Error broadcasting adverts batch: %s", e)
-            # TODO(safety): this is extremely likely to explode
-            # it would be nice to have a limit on adverts in general
-            # for advert in msg.items:
-            #    self.adverts_queue.put_nowait((0, advert))
+            log.warning("Error broadcasting batch: %s", e)
 
         # Schedule next batch
-        self.schedule_batch_fwd_adverts()
+        self.schedule_batch_broadcast()
 
     # Network methods - May raise OSError
 
@@ -496,9 +489,9 @@ class Node:
                 self.on_set(log, item)
 
         # Reschedule next adverts forwarding batch if necessary
-        if self.is_adverts_queue_changed:
-            self.schedule_batch_fwd_adverts()
-            self.is_adverts_queue_changed = False
+        if self.is_broadcast_queue_changed:
+            self.schedule_batch_broadcast()
+            self.is_broadcast_queue_changed = False
 
     # Handlers for each MessageItem type
     # If called directly, it is your responsibility to refresh any
@@ -527,7 +520,7 @@ class Node:
     def on_advert(self, log: Logger, addr: Addr, advert: AdvertItem):
         log = ContextLogger(log, f"{advert.client}")
         if addr not in self.peers:
-            logging.warning("Received advert from unknown peer")
+            log.warning("Received advert from unknown peer")
             self.on_peer(log, addr, PeerItem(advert.eol))
 
         # Check for previous client advert entry
@@ -555,10 +548,10 @@ class Node:
             self.routes[advert.client] = []
         for idx, route in enumerate(self.routes[advert.client]):
             if route["addr"] == addr:
-                self.routes[advert.client][idx]["score"] = advert.score - 1
+                self.routes[advert.client][idx]["score"] = advert.score
                 break
         else:
-            new_route = {"addr": addr, "score": advert.score - 1}
+            new_route = {"addr": addr, "score": advert.score}
             self.routes[advert.client].append(new_route)
         self.routes[advert.client].sort(
             key=lambda route: route["score"], reverse=True)
@@ -578,8 +571,8 @@ class Node:
 
         # Add advert to queue
         deadline = time.time() + advert.ttp
-        self.adverts_queue.put_nowait((deadline, advert))
-        self.is_adverts_queue_changed = True
+        self.broadcast_queue.put_nowait((deadline, advert))
+        self.is_broadcast_queue_changed = True
         log.debug("New advert deadline: %s", to_human(deadline))
 
         # TODO(safely): cooldown
@@ -624,7 +617,7 @@ class Node:
     def on_set(self, log: Logger, s: SetItem):
         log = ContextLogger(log, f"set {s.label}@{s.at}")
         if s.label not in self.interests:
-            logging.warning("Received set for an unknown interest")
+            log.warning("Received set for an unknown interest")
             self.interests[s.label] = {}
 
         # Check for previous content entry
