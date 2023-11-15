@@ -741,6 +741,16 @@ class Node:
             self.is_send_queue_changed = True
             log.debug("New main get deadline: %s", to_human(deadline))
 
+        # If we can fulfil this get, add sets toward client to queue
+        if g.label in self.content_store:
+            s = self.content_store[g.label]
+            s.dst = [(g.ttp, g.client)]
+            deadline = time.time() + g.ttp
+            routes = self.routes[g.client] if g.client in self.routes else []
+            self.send_queue.put_nowait((deadline, g.client, routes, s))
+            self.is_send_queue_changed = True
+            log.debug("New immediate set deadline: %s", to_human(deadline))
+
     def on_set(self, log: Logger, s: SetItem):
         log = ContextLogger(log, f"set {s.label}@{s.at}")
         if s.label not in self.interests:
