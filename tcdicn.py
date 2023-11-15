@@ -454,7 +454,7 @@ class Node:
         if addr is not None:
             try:
                 await self.send_msg(addr, Message(items))
-            except OSError:
+            except (asyncio.TimeoutError, OSError):
                 log.warning("Unable to contact %s", addr)
                 ext = 0 if self.is_main else DEADLINE_EXT
                 for deadline, client, routes, item in accepted:
