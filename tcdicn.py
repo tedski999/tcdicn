@@ -8,10 +8,9 @@ import socket
 import time
 from abc import ABC, abstractmethod
 from asyncio import Task, Future, DatagramTransport, StreamWriter, StreamReader
-from logging import Logger, LoggerAdapter
 from json import JSONDecodeError
 from logging import Logger, LoggerAdapter
-from typing import Dict, Tuple, List, Optional, TypeVar, Union
+from typing import Dict, Tuple, List, Optional
 
 # The version of this protocol implementation is included in all communications
 # This allows peers which implement one or more versions to react appropriately
@@ -28,6 +27,9 @@ MAX_SCORE = 10000
 
 # Seconds to wait for a TCP connection to be established before giving up
 TCP_TIMEOUT: float = 2
+
+# Seconds to allow for TCP stream to stay open
+DATA_TIMEOUT: float = 2
 
 # Seconds to wait before retrying after exhausting all known routes to client
 DEADLINE_EXT: float = 10
@@ -57,7 +59,7 @@ def do_after(eol: float, callback) -> Task:
     return asyncio.create_task(on_timeout())
 
 
-# Nodes commutate using messages which can be sent over TCP or UDP
+# Nodes communicate using messages which can be sent over TCP or UDP
 # A Message is only a JSON formatted version number and list of MessageItems
 # JSON field names are shrunk to help pack more information into UDP datagrams
 
@@ -226,6 +228,7 @@ class Message:
 # to send interests and data to only places that it is needed
 class Node:
     def __init__(self):
+        self.is_main = None
         self.tcp = None
         self.advert = None
         self.dport = None
@@ -652,6 +655,7 @@ class Node:
                     if route["addr"] == addr:
                         del self.routes[client][idx]
                         break
+
         self.peers[addr] = peer
         self.peers[addr].timer = do_after(peer.eol, on_timeout)
 
@@ -694,6 +698,7 @@ class Node:
             log.info("Timed out client")
             del self.clients[advert.client]
             del self.routes[advert.client]
+
         self.clients[advert.client] = advert
         self.clients[advert.client].timer = do_after(advert.eol, on_timeout)
 
@@ -740,6 +745,7 @@ class Node:
             if len(self.interests[g.label]) == 0:
                 log.info("No more interest for label")
                 del self.interests[g.label]
+
         self.interests[g.label][g.client] = g
         self.interests[g.label][g.client].timer = do_after(g.eol, on_timeout)
 
