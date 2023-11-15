@@ -17,7 +17,7 @@ async def main():
     verbs = {"DEBUG": logging.DEBUG, "INFO": logging.INFO}
     logging.basicConfig(
         format="%(asctime)s.%(msecs)03d [%(levelname)s] %(message)s",
-        level=verbs[verb], datefmt="%H:%M:%S:%m")
+        level=verbs[verb], datefmt="%H:%M:%S")
 
     # Run the ICN node until shutdown
     logging.info("Starting node...")

@@ -26,7 +26,7 @@ async def main():
     verbs = {"DEBUG": logging.DEBUG, "INFO": logging.INFO}
     logging.basicConfig(
         format="%(asctime)s.%(msecs)03d [%(levelname)s] %(message)s",
-        level=verbs[verb], datefmt="%H:%M:%S:%m")
+        level=verbs[verb], datefmt="%H:%M:%S")
 
     # Pick a random subset of labels to subscribe to
     labels = ["foo", "bar", "baz", "qux", "quux"]
