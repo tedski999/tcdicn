@@ -8,6 +8,7 @@ import socket
 import time
 from abc import ABC, abstractmethod
 from asyncio import Task, Future, DatagramTransport, StreamWriter, StreamReader
+from logging import Logger, LoggerAdapter
 from json import JSONDecodeError
 from logging import Logger, LoggerAdapter
 from typing import Dict, Tuple, List, Optional, TypeVar, Union
@@ -34,17 +35,11 @@ DEADLINE_EXT: float = 10
 # Peers are identified solely by their host and port number
 Addr = Tuple[str, int]
 
-LOG_T = TypeVar('LOG_T', bound=Union[Logger, LoggerAdapter])
-
 
 # Prepend logger output with some useful context
 class ContextLogger(LoggerAdapter):
-    def __init__(self, logger, prefix: str):
-        super().__init__(logger)
-        self.prefix: str = prefix
-
     def process(self, msg, kwargs):
-        return f"{self.prefix} | {msg}", kwargs
+        return f"{self.extra} | {msg}", kwargs
 
 
 # Convert a UNIX timestamp into a human readable seconds since string
@@ -524,7 +519,6 @@ class Node:
 
             items = new_items
             msg = new_msg
-            msg_bytes = new_msg_bytes  # Not used
             msg_len = new_msg_len
 
         # Send it!
@@ -553,7 +547,8 @@ class Node:
     def broadcast_msg(self, msg: Message):
         msg_bytes = msg.to_bytes()
         host = socket.gethostname()
-        addrs = socket.getaddrinfo(host, self.dport, proto=socket.IPPROTO_UDP)
+        addrs = socket.getaddrinfo(
+            host, self.dport, family=socket.AF_INET, proto=socket.IPPROTO_UDP)
         for (_, _, _, _, (host, port)) in addrs:
             net = ipaddress.IPv4Network(host + "/24", False)  # NOTE: hardcoded
             self.udp.sendto(msg_bytes, (str(net.broadcast_address), port))
@@ -586,9 +581,11 @@ class Node:
         log.debug("New connection")
 
         # Read entire message
-        # TODO(safety): limit amount and time
         try:
-            data = await reader.read()
+            data = await asyncio.wait_for(reader.read(), timeout=DATA_TIMEOUT)
+        except asyncio.TimeoutError:
+            log.warning("Read timed out")
+            return
         except Exception as exc:
             log.warning("Error reading: %s", exc)
             return
@@ -599,7 +596,7 @@ class Node:
         self.on_message(log, addr, data)
 
     # Common logic for handling both TCP and UDP messages
-    def on_message(self, log: LOG_T, addr: Addr, data: bytes):
+    def on_message(self, log: Logger, addr: Addr, data: bytes):
 
         # Parse message
         try:
@@ -613,15 +610,15 @@ class Node:
 
         # Handle message items appropriately
         for item in msg.items:
-            if isinstance(item, PeerItem):
+            if type(item) is PeerItem:
                 self.on_peer(log, addr, item)
         for item in msg.items:
-            if isinstance(item, AdvertItem):
+            if type(item) is AdvertItem:
                 self.on_advert(log, addr, item)
         for item in msg.items:
-            if isinstance(item, GetItem):
+            if type(item) is GetItem:
                 self.on_get(log, item)
-            elif isinstance(item, SetItem):
+            elif type(item) is SetItem:
                 self.on_set(log, item)
 
         # Reschedule next batches if necessary
@@ -636,7 +633,7 @@ class Node:
     # If called directly, it is your responsibility to refresh any
     # scheduled tasks that should be affected (see on_message)
 
-    def on_peer(self, log: LOG_T, addr: Addr, peer: PeerItem):
+    def on_peer(self, log: Logger, addr: Addr, peer: PeerItem):
         log = ContextLogger(log, "peer")
 
         # Check for previous peer entry
@@ -655,7 +652,6 @@ class Node:
                     if route["addr"] == addr:
                         del self.routes[client][idx]
                         break
-
         self.peers[addr] = peer
         self.peers[addr].timer = do_after(peer.eol, on_timeout)
 
@@ -698,7 +694,6 @@ class Node:
             log.info("Timed out client")
             del self.clients[advert.client]
             del self.routes[advert.client]
-
         self.clients[advert.client] = advert
         self.clients[advert.client].timer = do_after(advert.eol, on_timeout)
 
@@ -720,10 +715,9 @@ class Node:
         self.is_broadcast_queue_changed = True
         log.debug("New advert deadline: %s", to_human(deadline))
 
-        # TODO(safely): cooldown
-        # TODO(safely): issue warning if duplicate name spotted
+        # TODO(safely): cooldown / remove duplicates
 
-    def on_get(self, log: LOG_T, g: GetItem):
+    def on_get(self, log: Logger, g: GetItem):
         log = ContextLogger(log, f"get {g.label}>{g.after}@{g.client}")
 
         # Check for previous interest entry
@@ -746,7 +740,6 @@ class Node:
             if len(self.interests[g.label]) == 0:
                 log.info("No more interest for label")
                 del self.interests[g.label]
-
         self.interests[g.label][g.client] = g
         self.interests[g.label][g.client].timer = do_after(g.eol, on_timeout)
 
@@ -768,7 +761,18 @@ class Node:
             self.is_send_queue_changed = True
             log.debug("New main get deadline: %s", to_human(deadline))
 
-    def on_set(self, log: LOG_T, s: SetItem):
+        # If we can fulfil this get, add sets toward client to queue
+        if g.label in self.content_store \
+                and self.content_store[g.label].at > g.after:
+            s = self.content_store[g.label]
+            s.dst = [(g.ttp, g.client)]
+            deadline = time.time() + g.ttp
+            routes = self.routes[g.client] if g.client in self.routes else []
+            self.send_queue.put_nowait((deadline, g.client, routes, s))
+            self.is_send_queue_changed = True
+            log.debug("New immediate set deadline: %s", to_human(deadline))
+
+    def on_set(self, log: Logger, s: SetItem):
         log = ContextLogger(log, f"set {s.label}@{s.at}")
         if s.label not in self.interests:
             log.warning("Received set for an unknown interest")

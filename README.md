@@ -26,8 +26,8 @@ Note that these "client" nodes should have unique names on the network, or you w
 
 After instantiating a Node with `node = Node()`, Your sensors and actuators only need to care about 3 methods:
 - `await node.start(port: int, dport: int, ttl: float, tpf: float, client: dict = None)`: Starts the node networking servers and begins communicating with the network. Does not return until the server is shutdown (either press Ctrl+C, send a SIGINT to the process or cancel this coroutine in Python).
-  - `port`: Which port to listen on for notifications, advertisements and TCP connections which send interests and data.
-  - `dport` (Discovery port): Which port is use by other nodes, which we send all of our notifications and advertisements to when broadcasting. Most nodes should have this in common, but some nodes may set `port` differently if they want to run on the same device as another node (which is the "main" node on the device).
+  - `port`: Which port to listen on for notifications, advertisements and TCP connections which send interests and data. Make sure this is accessable, as other nodes (potentially from other PIs) will try to contact this node using it.
+  - `dport` (Discovery port): Which port is use by other nodes, which we send all of our notifications and advertisements to when broadcasting to discover each other. Most nodes should have this in common, but some nodes may set `port` differently if they want to run on the same device as another node (which is the "main" node on the device).
   - `ttl` (Time To Live) specifies how many seconds other nodes should remember you.
   - `tpf` (TTL PreFire) is how many notifications should be sent before our TTL runs out, such that notifications are sent to all peers every `ttl/tpf` seconds.
   - The optional `client` argument declares that this node is a "client" and should advertise this to other nodes. This argument is necessary for `node.get` and `node.set` to function. The `client` dict must contain the following keys:
