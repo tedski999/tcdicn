@@ -143,11 +143,13 @@ class GetItem(MessageItem):
 # Time To Propagate (TTP) demands that nodes wait no more than TTP seconds
 # before propagating this SetItem towards subscribers (due to batching reasons)
 class SetItem:
-    def __init__(self, label: str, data: str, at: float, ttp: float):
+    def __init__(
+            self, label: str, data: str,
+            at: float, dst: List[Tuple[float, str]]):
         self.label = label
         self.data = data
         self.at = at
-        self.ttp = ttp
+        self.dst = dst
         # Used internal within nodes to allow .get() to always return new data
         self.last: float = 0
         self.fulfil: Future = None
@@ -158,13 +160,13 @@ class SetItem:
             "l": self.label,
             "d": self.data,
             "a": self.at,
-            "p": self.ttp,
+            "c": self.dst,
         }
 
     def from_dict(d: dict):
         if d["t"] != "s":
             raise ValueError("Not a set request message item")
-        return SetItem(d["l"], d["d"], d["a"], d["p"])
+        return SetItem(d["l"], d["d"], d["a"], d["c"])
 
 
 # The data structure passed between nodes on the network in JSON format
@@ -223,7 +225,6 @@ class Node:
             client: dict = None):
         self.port = port
         self.dport = dport
-        self.ttl = ttl
 
         self.advert = None if client is None else AdvertItem(
             client["name"], client["labels"], 1000, client["ttp"], 0)
@@ -299,7 +300,7 @@ class Node:
 
         # Check if local content store already has a new value
         if label not in self.content_store:
-            self.content_store[label] = SetItem(label, None, 0, ttp)
+            self.content_store[label] = SetItem(label, None, 0, [])
             log.debug("Created new label in local content store")
         if self.content_store[label].at > self.content_store[label].last:
             log.info("New value found in local content store")
@@ -334,8 +335,14 @@ class Node:
     # This will only be propagated towards interested clients
     async def set(self, label: str, data: str):
         log = ContextLogger(self.log, f"set {label}")
-        log.info("Publishing to %s...", label)
-        self.on_set(log, SetItem(label, data, time.time(), 0))
+        log.info("Publishing...")
+        dst = []
+        if label in self.interests:
+            for get_item in self.interests[label].values():
+                dst.append((get_item.ttp, get_item.client))
+        else:
+            log.debug("Nobody is interested")
+        self.on_set(log, SetItem(label, data, time.time(), dst))
 
     # Batching
 
@@ -517,9 +524,11 @@ class Node:
         def on_timeout():
             log.info("Timed out peer")
             del self.peers[addr]
-            for client, entry in self.routes.items():
-                if entry["addr"] == addr:
-                    del self.routes[client]
+            for client, entries in list(self.routes.items()):
+                for entry in entries:
+                    if entry["addr"] == addr:
+                        del self.routes[client]
+                        break
         self.peers[addr] = peer
         self.peers[addr].timer = do_after(peer.eol, on_timeout)
 
@@ -584,6 +593,7 @@ class Node:
         # TODO(safely): cooldown
         # TODO(safely): issue warning if duplicate name spotted
 
+    # TODO(optimisation): propagation doesnt work first try in some weird cases
     def on_get(self, log: Logger, g: GetItem):
         log = ContextLogger(log, f"get {g.label}>{g.after}@{g.client}")
 
@@ -648,9 +658,8 @@ class Node:
             fulfil.set_result(True)
 
         # TODO(optimisation) use batching+retrying with ttp set to interest ttp
-        if s.label in self.interests:
-            for client in self.interests[s.label]:
-                if self.advert is None or self.advert.client != client:
-                    if client in self.routes and len(self.routes[client]) > 0:
-                        best_peer = self.routes[client][0]["addr"]  # TODO: check
-                        asyncio.create_task(self.send_msg(best_peer, Message([s])))
+        for ttp, client in s.dst:
+            if self.advert is None or self.advert.client != client:
+                if client in self.routes and len(self.routes[client]) > 0:
+                    best_peer = self.routes[client][0]["addr"]  # TODO: check
+                    asyncio.create_task(self.send_msg(best_peer, Message([s])))
