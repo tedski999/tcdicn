@@ -15,8 +15,8 @@ async def main():
     ttl = float(os.environ.get("TCDICN_TTL", 90))
     tpf = int(os.environ.get("TCDICN_TPF", 6))
     ttp = float(os.environ.get("TCDICN_TTP", 1))
-    get_ttl = float(os.environ.get("TCDICN_GET_TTL", 5))
-    get_tpf = int(os.environ.get("TCDICN_GET_TPF", 2))
+    get_ttl = float(os.environ.get("TCDICN_GET_TTL", 90))
+    get_tpf = int(os.environ.get("TCDICN_GET_TPF", 3))
     get_ttp = float(os.environ.get("TCDICN_GET_TTP", 0))
     if name is None:
         sys.exit("Please give your sensor a unique ID by setting TCDICN_ID")

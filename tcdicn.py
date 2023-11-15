@@ -149,7 +149,7 @@ class SetItem:
         self.ttp = ttp
         # Used internal within nodes to allow .get() to always return new data
         self.last: float = 0
-        self.fulfil: Task = None
+        self.fulfil: Future = None
 
     def to_dict(self) -> dict:
         return {
@@ -530,7 +530,7 @@ class Node:
             logging.warning("Received advert from unknown peer")
             self.on_peer(log, addr, PeerItem(advert.eol))
 
-        # Check for previous entry
+        # Check for previous client advert entry
         try:
             if advert.eol <= self.clients[advert.client].eol:
                 log.debug("Ignored old advert")
@@ -567,10 +567,9 @@ class Node:
         # TODO(optimisation): use batching+retrying
         new_interests_to_be_pushed = []
         for label in advert.labels:
-            if label not in previous_labels:
-                if label in self.interests:
-                    for interest in self.interests[label].values():
-                        new_interests_to_be_pushed.append(interest)
+            if label not in previous_labels and label in self.interests:
+                for interest in self.interests[label].values():
+                    new_interests_to_be_pushed.append(interest)
         if len(new_interests_to_be_pushed) != 0:
             log.info("Notifying client of new interests")
             msg = Message(new_interests_to_be_pushed)
@@ -589,7 +588,7 @@ class Node:
     def on_get(self, log: Logger, g: GetItem):
         log = ContextLogger(log, f"get {g.label}>{g.after}@{g.client}")
 
-        # Check for previous entry
+        # Check for previous interest entry
         if g.label not in self.interests:
             log.info("New interest in label")
             self.interests[g.label] = {}
@@ -624,7 +623,11 @@ class Node:
 
     def on_set(self, log: Logger, s: SetItem):
         log = ContextLogger(log, f"set {s.label}@{s.at}")
+        if s.label not in self.interests:
+            logging.warning("Received set for an unknown interest")
+            self.interests[s.label] = {}
 
+        # Check for previous content entry
         try:
             if self.content_store[s.label].at >= s.at:
                 log.debug("Ignored old publications")
@@ -636,6 +639,7 @@ class Node:
             last = 0
             fulfil = None
 
+        # Insert new entry
         self.content_store[s.label] = s
         self.content_store[s.label].last = last
         log.debug("Updated local content store")
@@ -644,7 +648,10 @@ class Node:
         if fulfil is not None:
             fulfil.set_result(True)
 
-        # TODO(v0.2) send towards only interested clients
         # TODO(optimisation) use batching+retrying with ttp set to interest ttp
-        for peer in self.peers:
-            asyncio.create_task(self.send_msg(peer, Message([s])))
+        if s.label in self.interests:
+            for client in self.interests[s.label]:
+                if self.advert is None or self.advert.client != client:
+                    if client in self.routes and len(self.routes[client]) > 0:
+                        best_peer = self.routes[client][0]["addr"]  # TODO: check
+                        asyncio.create_task(self.send_msg(best_peer, Message([s])))
