@@ -10,6 +10,12 @@ services:
         FROM python
         COPY tcdicn.py examples/node.py .
         CMD python3 -c "import random, time; time.sleep(random.uniform(0, 5))"; exec python3 node.py
+    environment:
+      TCDICN_PORT: $TCDICN_PORT
+      TCDICN_DPORT: $TCDICN_DPORT
+      TCDICN_TTL: $TCDICN_TTL
+      TCDICN_TPF: $TCDICN_TPF
+      TCDICN_VERBOSITY: $TCDICN_VERBOSITY
 
   sensor:
     build:
@@ -18,7 +24,13 @@ services:
         FROM python
         COPY tcdicn.py examples/sensor.py .
         CMD python3 -c "import random, time; time.sleep(random.uniform(0, 5))"; exec python3 sensor.py
-    environment: [ TCDICN_ID=my_cool_sensor ]
+    environment:
+      TCDICN_ID: my_cool_sensor
+      TCDICN_PORT: $TCDICN_PORT
+      TCDICN_DPORT: $TCDICN_DPORT
+      TCDICN_TTL: $TCDICN_TTL
+      TCDICN_TPF: $TCDICN_TPF
+      TCDICN_VERBOSITY: $TCDICN_VERBOSITY
 
   actuator:
     build:
@@ -27,4 +39,14 @@ services:
         FROM python
         COPY tcdicn.py examples/actuator.py .
         CMD python3 -c "import random, time; time.sleep(random.uniform(0, 5))"; exec python3 actuator.py
-    environment: [ TCDICN_ID=my_cool_actuator ]
+    environment:
+      TCDICN_ID: my_cool_actuator
+      TCDICN_PORT: $TCDICN_PORT
+      TCDICN_DPORT: $TCDICN_DPORT
+      TCDICN_TTL: $TCDICN_TTL
+      TCDICN_TPF: $TCDICN_TPF
+      TCDICN_TTP: $TCDICN_TTP
+      TCDICN_GET_TTL: $TCDICN_GET_TTL
+      TCDICN_GET_TPF: $TCDICN_GET_TPF
+      TCDICN_GET_TTP: $TCDICN_GET_TTP
+      TCDICN_VERBOSITY: $TCDICN_VERBOSITY

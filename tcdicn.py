@@ -641,7 +641,7 @@ class Node:
         # Insert new entry
         self.content_store[s.label] = s
         self.content_store[s.label].last = last
-        log.debug("Updated local content store")
+        log.info("Updated local content store")
 
         # Fulfil any local interests (applications waiting in .get())
         if fulfil is not None:

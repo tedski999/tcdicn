@@ -7,15 +7,17 @@ import tcdicn
 async def main():
 
     # Get parameters or defaults
-    port = int(os.environ.get("TCDICN_PORT", 33333))
-    dport = int(os.environ.get("TCDICN_DPORT", port))
-    ttl = int(os.environ.get("TCDICN_TTL", 180))
-    tpf = int(os.environ.get("TCDICN_TPF", 6))
+    port = int(os.getenv("TCDICN_PORT") or 33333)
+    dport = int(os.getenv("TCDICN_DPORT") or port)
+    ttl = int(os.getenv("TCDICN_TTL") or 90)
+    tpf = int(os.getenv("TCDICN_TPF") or 3)
+    verb = os.getenv("TCDICN_VERBOSITY") or "INFO"
 
     # Logging verbosity
+    verbs = {"DEBUG": logging.DEBUG, "INFO": logging.INFO}
     logging.basicConfig(
         format="%(asctime)s.%(msecs)03d [%(levelname)s] %(message)s",
-        level=logging.DEBUG, datefmt="%H:%M:%S:%m")
+        level=verbs[verb], datefmt="%H:%M:%S:%m")
 
     # Run the ICN node until shutdown
     logging.info("Starting node...")

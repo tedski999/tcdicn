@@ -9,19 +9,21 @@ import tcdicn
 async def main():
 
     # Get parameters or defaults
-    name = os.environ.get("TCDICN_ID")
-    port = int(os.environ.get("TCDICN_PORT", 33333))
-    dport = int(os.environ.get("TCDICN_DPORT", port))
-    ttl = float(os.environ.get("TCDICN_TTL", 90))
-    tpf = int(os.environ.get("TCDICN_TPF", 6))
-    ttp = float(os.environ.get("TCDICN_TTP", 1))
+    name = os.getenv("TCDICN_ID")
+    port = int(os.getenv("TCDICN_PORT") or 33333)
+    dport = int(os.getenv("TCDICN_DPORT") or port)
+    ttl = int(os.getenv("TCDICN_TTL") or 90)
+    tpf = int(os.getenv("TCDICN_TPF") or 3)
+    ttp = float(os.getenv("TCDICN_TTP") or 1)
+    verb = os.getenv("TCDICN_VERBOSITY") or "INFO"
     if name is None:
         sys.exit("Please give your sensor a unique ID by setting TCDICN_ID")
 
     # Logging verbosity
+    verbs = {"DEBUG": logging.DEBUG, "INFO": logging.INFO}
     logging.basicConfig(
         format="%(asctime)s.%(msecs)03d [%(levelname)s] %(message)s",
-        level=logging.DEBUG, datefmt="%H:%M:%S:%m")
+        level=verbs[verb], datefmt="%H:%M:%S:%m")
 
     # Pick a random subset of labels to publish to
     labels = ["foo", "bar", "baz", "qux", "quux"]

@@ -10,4 +10,4 @@ Clients should have unique names on the network. Run the example sensor:
 
 If you would like to test locally with virtual ICN nodes, run one of the example scenarios using Docker:
 
-    docker compose --file simulations/line.yml up --build
+    TCDICN_TTL=10 TCDICN_GET_TTL=30 TCDICN_VERBOSITY=INFO docker compose --file simulations/paths.yml up --build
