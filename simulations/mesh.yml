@@ -3,47 +3,34 @@ name: "tcdicn-mesh"
 
 services:
 
-  a-server:
-    extends:
-      file: basic.yml
-      service: server
-    networks: [ a, abcd ]
-
-  a-sensor:
+  a:
     extends:
       file: basic.yml
       service: sensor
-    networks: [ a ]
-    environment: [ TCDICN_SERVER_HOST=a-server, TCDICN_ID=my_cool_sensor ]
+    networks: [ abcd ]
+    environment: [ TCDICN_ID=my_cool_sensor ]
 
-  b-server:
+  b:
     extends:
       file: basic.yml
-      service: server
-    networks: [ b, abcd ]
+      service: node
+    networks: [ abcd ]
 
-  c-server:
+  c:
     extends:
       file: basic.yml
-      service: server
-    networks: [ c, abcd ]
+      service: node
+    networks: [ abcd ]
 
-  d-server:
-    extends:
-      file: basic.yml
-      service: server
-    networks: [ d, abcd ]
-
-  d-actuator:
+  d:
     extends:
       file: basic.yml
       service: actuator
-    networks: [ d ]
-    environment: [ TCDICN_SERVER_HOST=d-server, TCDICN_ID=my_cool_actuator ]
+    networks: [ abcd ]
+    environment: [ TCDICN_ID=my_cool_actuator ]
 
 networks:
-  a:
-  b:
-  c:
-  d:
   abcd:
+    ipam:
+      config:
+        - subnet: 172.1.1.0/24

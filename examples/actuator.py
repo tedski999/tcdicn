@@ -9,69 +9,65 @@ import tcdicn
 async def main():
 
     # Get parameters or defaults
-    id = os.environ.get("TCDICN_ID")
-    port = int(os.environ.get("TCDICN_PORT", random.randint(33334, 65536)))
-    server_host = os.environ.get("TCDICN_SERVER_HOST", "localhost")
-    server_port = int(os.environ.get("TCDICN_SERVER_PORT", 33333))
-    net_ttl = int(os.environ.get("TCDICN_NET_TTL", 180))
-    net_tpf = int(os.environ.get("TCDICN_NET_TPF", 3))
-    net_ttp = float(os.environ.get("TCDICN_NET_TTP", 0))
-    get_ttl = int(os.environ.get("TCDICN_GET_TTL", 180))
-    get_tpf = int(os.environ.get("TCDICN_GET_TPF", 3))
-    get_ttp = float(os.environ.get("TCDICN_GET_TTP", 0))
-    if id is None:
-        sys.exit("Please give your client a unique ID by setting TCDICN_ID")
+    name = os.getenv("TCDICN_ID")  # A unique name to call me on the network
+    port = int(os.getenv("TCDICN_PORT") or 33333)  # Listen on :33333
+    dport = int(os.getenv("TCDICN_DPORT") or port)  # Talk to :33333
+    ttl = float(os.getenv("TCDICN_TTL") or 30)  # Forget me after 30s
+    tpf = int(os.getenv("TCDICN_TPF") or 3)  # Remind peers every 30/3s
+    ttp = float(os.getenv("TCDICN_TTP") or 5)  # Repeat my adverts before 5s
+    get_ttl = float(os.getenv("TCDICN_GET_TTL") or 90)  # Forget my interest
+    get_tpf = int(os.getenv("TCDICN_GET_TPF") or 2)  # Remind about my interest
+    get_ttp = float(os.getenv("TCDICN_GET_TTP") or 0.5)  # Deadline to respond
+    verb = os.getenv("TCDICN_VERBOSITY") or "info"  # Logging verbosity
+    if name is None:
+        sys.exit("Please give your sensor a unique ID by setting TCDICN_ID")
 
     # Logging verbosity
+    verbs = {"dbug": logging.DEBUG, "info": logging.INFO, "warn": logging.WARN}
     logging.basicConfig(
-        format="%(asctime)s.%(msecs)04d [%(levelname)s] %(message)s",
-        level=logging.INFO, datefmt="%H:%M:%S:%m")
+        format="%(asctime)s.%(msecs)03d [%(levelname)s] %(message)s",
+        level=verbs[verb], datefmt="%H:%M:%S")
 
-    # Pick a random subset of tags to subscribe to
-    tags = ["foo", "bar", "baz", "qux", "quux"]
-    tags = random.sample(tags, random.randint(1, 3))
-    tags.append("always")
+    # Pick a random subset of labels to subscribe to
+    labels = ["foo", "bar", "baz", "qux", "quux"]
+    labels = random.sample(labels, random.randint(1, 3))
+    labels.append("always")
 
-    # Start the client as a background task
-    logging.info("Starting client...")
-    client = tcdicn.Client(
-        id, port, [],
-        server_host, server_port,
-        net_ttl, net_tpf, net_ttp)
+    # ICN client node called name does not publish and needs
+    # any data propagated back in under ttp seconds at each node
+    client = {"name": name, "ttp": ttp, "labels": []}
+    node = tcdicn.Node()
+    node_task = asyncio.create_task(node.start(port, dport, ttl, tpf, client))
 
     # Subscribe to random subset of data
     async def run_actuator():
         tasks = set()
 
-        def subscribe(tag):
-            getter = client.get(tag, get_ttl, get_tpf, get_ttp)
-            task = asyncio.create_task(getter, name=tag)
+        def subscribe(label):
+            logging.info("Subscribing to %s...", label)
+            getter = node.get(label, get_ttl, get_tpf, get_ttp)
+            task = asyncio.create_task(getter, name=label)
             tasks.add(task)
 
-        for tag in tags:
-            logging.info(f"Subscribing to {tag}...")
-            subscribe(tag)
+        for label in labels:
+            subscribe(label)
 
         while True:
             done, tasks = await asyncio.wait(
                 tasks, return_when=asyncio.FIRST_COMPLETED)
             for task in done:
-                tag = task.get_name()
+                label = task.get_name()
                 value = task.result()
-                logging.info(f"Received {tag}={value}")
-                logging.info(f"Resubscribing to {tag}...")
-                subscribe(tag)
+                logging.info("Received %s=%s", label, value)
+                subscribe(label)
+    actuator_task = asyncio.create_task(run_actuator())
 
-    # Initialise execution of the actuator logic as a coroutine
+    # Run ICN node until shutdown while executing the actuator
     logging.info("Starting actuator...")
-    actuator = run_actuator()
-
-    # Wait for the client to shutdown while executing the actuator coroutine
-    both_tasks = asyncio.gather(client.task, actuator)
-    try:
-        await both_tasks
-    except asyncio.exceptions.CancelledError:
-        logging.info("Client has shutdown.")
+    tasks = [node_task, actuator_task]
+    await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+    actuator_task.cancel()
+    logging.info("Done.")
 
 
 if __name__ == "__main__":

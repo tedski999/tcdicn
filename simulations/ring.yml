@@ -3,50 +3,46 @@ name: "tcdicn-ring"
 
 services:
 
-  a-server:
-    extends:
-      file: basic.yml
-      service: server
-    networks: [ da, a, ab ]
-
-  a-sensor:
+  a:
     extends:
       file: basic.yml
       service: sensor
-    networks: [ a ]
-    environment: [ TCDICN_SERVER_HOST=a-server, TCDICN_ID=my_cool_sensor ]
+    networks: [ da, ab ]
+    environment: [ TCDICN_ID=my_cool_sensor ]
 
-  b-server:
+  b:
     extends:
       file: basic.yml
-      service: server
-    networks: [ ab, b, bc ]
+      service: node
+    networks: [ ab, bc ]
 
-  c-server:
-    extends:
-      file: basic.yml
-      service: server
-    networks: [ bc, c, cd ]
-
-  c-actuator:
+  c:
     extends:
       file: basic.yml
       service: actuator
-    networks: [ c ]
-    environment: [ TCDICN_SERVER_HOST=c-server, TCDICN_ID=my_cool_actuator ]
+    networks: [ bc, cd ]
+    environment: [ TCDICN_ID=my_cool_actuator ]
 
-  d-server:
+  d:
     extends:
       file: basic.yml
-      service: server
-    networks: [ cd, d, da ]
+      service: node
+    networks: [ cd, da ]
 
 networks:
-  a:
   ab:
-  b:
+    ipam:
+      config:
+        - subnet: 172.2.1.0/24
   bc:
-  c:
+    ipam:
+      config:
+        - subnet: 172.2.2.0/24
   cd:
-  d:
+    ipam:
+      config:
+        - subnet: 172.2.3.0/24
   da:
+    ipam:
+      config:
+        - subnet: 172.2.4.0/24
