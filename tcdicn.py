@@ -240,6 +240,7 @@ class Node:
         self.dport = dport
         self.is_main = (port == dport)
 
+        # If this is a client node, prepare the advert we regularly send
         self.advert = None if client is None else AdvertItem(
             client["name"], client["labels"], MAX_SCORE, client["ttp"], 0)
 
@@ -432,7 +433,7 @@ class Node:
         if addr is not None:
             try:
                 await self.send_msg(addr, Message(items))
-            except OSError:
+            except (asyncio.TimeoutError, OSError):
                 log.warning("Unable to contact %s", addr)
                 ext = 0 if self.is_main else DEADLINE_EXT
                 for deadline, client, routes, item in accepted:
@@ -694,8 +695,7 @@ class Node:
         self.is_broadcast_queue_changed = True
         log.debug("New advert deadline: %s", to_human(deadline))
 
-        # TODO(safely): cooldown
-        # TODO(safely): issue warning if duplicate name spotted
+        # TODO(safely): cooldown / remove duplicates
 
     def on_get(self, log: Logger, g: GetItem):
         log = ContextLogger(log, f"get {g.label}>{g.after}@{g.client}")
