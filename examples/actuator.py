@@ -9,21 +9,21 @@ import tcdicn
 async def main():
 
     # Get parameters or defaults
-    name = os.getenv("TCDICN_ID")
-    port = int(os.getenv("TCDICN_PORT") or 33333)
-    dport = int(os.getenv("TCDICN_DPORT") or port)
-    ttl = float(os.getenv("TCDICN_TTL") or 90)
-    tpf = int(os.getenv("TCDICN_TPF") or 3)
-    ttp = float(os.getenv("TCDICN_TTP") or 1)
-    get_ttl = float(os.getenv("TCDICN_GET_TTL") or 90)
-    get_tpf = int(os.getenv("TCDICN_GET_TPF") or 2)
-    get_ttp = float(os.getenv("TCDICN_GET_TTP") or 0)
-    verb = os.getenv("TCDICN_VERBOSITY") or "INFO"
+    name = os.getenv("TCDICN_ID")  # A unique name to call me on the network
+    port = int(os.getenv("TCDICN_PORT") or 33333)  # Listen on :33333
+    dport = int(os.getenv("TCDICN_DPORT") or port)  # Talk to :33333
+    ttl = float(os.getenv("TCDICN_TTL") or 30)  # Forget me after 30s
+    tpf = int(os.getenv("TCDICN_TPF") or 3)  # Remind peers every 30/3s
+    ttp = float(os.getenv("TCDICN_TTP") or 5)  # Repeat my adverts before 5s
+    get_ttl = float(os.getenv("TCDICN_GET_TTL") or 90)  # Forget my interest
+    get_tpf = int(os.getenv("TCDICN_GET_TPF") or 2)  # Remind about my interest
+    get_ttp = float(os.getenv("TCDICN_GET_TTP") or 0.5)  # Deadline to respond
+    verb = os.getenv("TCDICN_VERBOSITY") or "info"  # Logging verbosity
     if name is None:
         sys.exit("Please give your sensor a unique ID by setting TCDICN_ID")
 
     # Logging verbosity
-    verbs = {"DEBUG": logging.DEBUG, "INFO": logging.INFO}
+    verbs = {"dbug": logging.DEBUG, "info": logging.INFO, "warn": logging.WARN}
     logging.basicConfig(
         format="%(asctime)s.%(msecs)03d [%(levelname)s] %(message)s",
         level=verbs[verb], datefmt="%H:%M:%S")
