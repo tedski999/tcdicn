@@ -1,0 +1,68 @@
+version: "3"
+name: "tcdicn-paths"
+
+services:
+
+  sensor:
+    extends:
+      file: basic.yml
+      service: sensor
+    networks: [ Sa1, Sb1 ]
+    environment: [ TCDICN_ID=my_cool_sensor ]
+
+  a1:
+    extends:
+      file: basic.yml
+      service: node
+    networks: [ Sa1, a1a2 ]
+
+  a2:
+    extends:
+      file: basic.yml
+      service: node
+    networks: [ a1a2, a2a3 ]
+
+  a3:
+    extends:
+      file: basic.yml
+      service: node
+    networks: [ a2a3, a3A ]
+
+  b1:
+    extends:
+      file: basic.yml
+      service: node
+    networks: [ Sb1, b1A ]
+
+  actuator:
+    extends:
+      file: basic.yml
+      service: actuator
+    networks: [ a3A, b1A ]
+    environment: [ TCDICN_ID=my_cool_actuator ]
+
+networks:
+  Sa1:
+    ipam:
+      config:
+        - subnet: 172.3.1.0/24
+  a1a2:
+    ipam:
+      config:
+        - subnet: 172.3.2.0/24
+  a2a3:
+    ipam:
+      config:
+        - subnet: 172.3.3.0/24
+  a3A:
+    ipam:
+      config:
+        - subnet: 172.3.4.0/24
+  Sb1:
+    ipam:
+      config:
+        - subnet: 172.3.5.0/24
+  b1A:
+    ipam:
+      config:
+        - subnet: 172.3.6.0/24
