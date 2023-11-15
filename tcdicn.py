@@ -13,7 +13,7 @@ from typing import Dict, Tuple, List
 
 # The version of this protocol implementation is included in all communications
 # This allows peers which implement one or more versions to react appropriately
-VERSION: str = "0.2-dev"
+VERSION: str = "0.2"
 
 # The soft maximum size in bytes to allow batched client advert forwarding
 # broadcasts, which limits the number of client adverts sent at once
@@ -267,7 +267,7 @@ class Node:
         async def do_regular_broadcasts():
             while True:
                 try:
-                    self.log.debug("Broadcasting advert...")
+                    self.log.debug("Broadcasting to peers...")
                     items = [PeerItem(time.time() + ttl)]
                     if self.advert is not None:
                         self.advert.eol = items[0].eol
@@ -295,6 +295,7 @@ class Node:
         try:
             async with self.tcp:
                 self.log.info("Up and listening on :%s", self.port)
+                self.log.info("Targeting :%s for discovery", self.dport)
                 await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         except asyncio.exceptions.CancelledError:
             self.log.debug("Node tasks cancelled")
@@ -516,7 +517,7 @@ class Node:
     def broadcast_msg(self, msg: Message):
         msg_bytes = msg.to_bytes()
         host = socket.gethostname()
-        addrs = socket.getaddrinfo(host, self.port, proto=socket.IPPROTO_UDP)
+        addrs = socket.getaddrinfo(host, self.dport, proto=socket.IPPROTO_UDP)
         for (_, _, _, _, (host, port)) in addrs:
             net = ipaddress.IPv4Network(host + "/24", False)  # NOTE: hardcoded
             self.udp.sendto(msg_bytes, (str(net.broadcast_address), port))
@@ -568,7 +569,7 @@ class Node:
         try:
             msg = Message.from_bytes(data)
         except (JSONDecodeError, KeyError, ValueError):
-            log.warning("Ignored malformed message %s")
+            log.warning("Ignored malformed message")
             return
         if msg.version != VERSION:
             log.warning("Ignored message with version %s", msg.version)
