@@ -533,7 +533,8 @@ class Node:
     def broadcast_msg(self, msg: Message):
         msg_bytes = msg.to_bytes()
         host = socket.gethostname()
-        addrs = socket.getaddrinfo(host, self.dport, proto=socket.IPPROTO_UDP)
+        addrs = socket.getaddrinfo(
+            host, self.dport, family=socket.AF_INET, proto=socket.IPPROTO_UDP)
         for (_, _, _, _, (host, port)) in addrs:
             net = ipaddress.IPv4Network(host + "/24", False)  # NOTE: hardcoded
             self.udp.sendto(msg_bytes, (str(net.broadcast_address), port))
