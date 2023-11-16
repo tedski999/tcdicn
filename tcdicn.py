@@ -9,6 +9,8 @@ import time
 from abc import ABC, abstractmethod
 from asyncio import Task, Future, DatagramTransport, StreamWriter, StreamReader
 from json import JSONDecodeError
+from cryptography.fernet import Fernet
+from cryptography.hazmat.primitives import serialization
 from logging import Logger, LoggerAdapter
 from typing import Dict, Tuple, List, Optional
 
@@ -57,6 +59,16 @@ def do_after(eol: float, callback) -> Task:
         callback()
 
     return asyncio.create_task(on_timeout())
+
+
+# Encode dict as bytes for transmission
+def encode(d: dict) -> bytes:
+    return json.dumps(d, separators=(",", ":")).encode()
+
+
+# Decode transmission bytes back to dict
+def decode(d: str) -> dict:
+    return json.loads(d)
 
 
 # Nodes communicate using messages which can be sent over TCP or UDP
@@ -211,10 +223,18 @@ class Message:
         return Message([t_map[item["t"]].from_dict(item) for item in d["i"]])
 
     def to_bytes(self) -> bytes:
-        return json.dumps(self.to_dict(), separators=(",", ":")).encode()
+        return encode(self.to_dict())
 
     def from_bytes(data: bytes):
-        return Message.from_dict(json.loads(data))
+        return Message.from_dict(decode(data))
+
+
+# TODO(comment)
+class Group:
+    def __init__(self, key: Fernet):
+        self.key = key
+        self.task = None
+        self.invites = []
 
 
 # Provides all the networking logic for interacting with a network of ICN nodes
@@ -237,10 +257,11 @@ class Node:
         self.log = logging.getLogger(__name__)
         self.peers: Dict[Addr, PeerItem] = {}  # IP>Peer info
         self.clients: Dict[str, AdvertItem] = {}  # ID>Client info
+        self.groups: Dict[str, Group] = {}  # Group name>Group info
         self.interests: Dict[str, Dict[str, GetItem]] = {}  # Label+ID>Interest
         self.routes: Dict[str, List[Dict]] = {}  # ID>Score+Route
         # TODO(optimisation): write to/read from disk
-        self.content_store: Dict[str, SetItem] = {}  # Label >data
+        self.content_store: Dict[str, SetItem] = {}  # Label>data
 
         self.batch_broadcast_task = None
         self.broadcast_queue = queue.PriorityQueue()
@@ -260,8 +281,13 @@ class Node:
         self.dport = dport
         self.is_main = (port == dport)
 
+        # If this is a client node, prepare the advert we regularly send
         self.advert = None if client is None else AdvertItem(
             client["name"], client["labels"], MAX_SCORE, client["ttp"], 0)
+
+        # Load private key if provided
+        self.key = None if client is None or "key" not in client \
+            else serialization.load_pem_private_key(client["key"])
 
         loop = asyncio.get_running_loop()
 
@@ -386,6 +412,137 @@ class Node:
         if self.is_send_queue_changed:
             self.schedule_batch_send()
             self.is_send_queue_changed = False
+
+    # Group encryption and authorisation
+
+    """
+        client_key = serialization.load_pem_public_key(client_key)
+
+        encrypted_secret = client_key.encrypt(
+            self.groups[group].key,
+            padding.OAEP(
+                mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                algorithm=hashes.SHA256(),
+                label=None))
+
+        signature = self.group[group]["my_key"].sign(
+            encrypted_secret,
+            padding.PSS(
+                mgf=padding.MGF1(hashes.SHA256()),
+                salt_length=padding.PSS.MAX_LENGTH),
+            hashes.SHA256())
+    """
+
+    # TODO(comment)
+    async def establish(self, group: str):
+        if group in self.groups:
+            raise RuntimeError("Already in group")
+
+        log = ContextLogger(self.log, f"grp {group}")
+        log = ContextLogger(log, "estb")
+
+        # Query the network for if this group name is taken
+        log.info("Querying for availability...")
+        try:
+            get = self.get(group, 10, 2, 0.1)
+            _ = await asyncio.wait_for(get, timeout=60)
+            raise RuntimeError("Group already exists")
+        except asyncio.TimeoutError:
+            pass
+
+        # Claim this group name
+        self.advert.labels.append(group)
+        await self.set(group, "")
+        log.debug("Name claimed")
+
+        # Generate group
+        self.groups[group] = Group(Fernet.generate_key())
+        log.info("Established")
+
+    # TODO(comment)
+    async def invite(self, group: str, client: str, key: str):
+        if group not in self.groups:
+            raise RuntimeError("Not in group")
+        if client in self.groups[group].invites:
+            raise RuntimeError("Already invited")
+
+        log = ContextLogger(self.log, f"grp {group}")
+        log = ContextLogger(log, f"inv {client}")
+
+        # Add invite to list
+        # TODO(v0.3): encrypt with public key
+        # TODO(v0.3): random code
+        invite = {"key": self.groups[group].key, "code": 0}
+        self.groups[group].invites[client] = key.encrypt(encode(invite))
+        log.info("Created invite")
+
+        # Send invite list until all accepted
+        async def send_invite_list():
+            while len(self.groups[group].invites) > 0:
+                log.debug("Sending invite list...")
+                label = group + "/" + self.advert.client
+                inv = encode(self.groups[group].invites)
+                sig = self.private_key(inv)  # TODO(v0.3): sign
+                invsig = {"inv": inv, "sig": sig}
+                await self.set(label, encode(invsig))
+                await asyncio.sleep(60)  # TODO(adapt): ttl/tpf
+            self.groups[group].task = None
+
+        if self.groups[group].task is not None:
+            self.groups[group].task.cancel()
+        self.groups[group].task = asyncio.create_task(send_invite_list())
+
+        # Wait for invite acceptance
+        while True:
+            label = group + "/" + self.advert.client + "/" + client
+            ttl, tpf, ttp = 60, 6, 0.1  # TODO(adapt): parameterise these
+            self.content_store[label] = SetItem(
+                label, None, time.time() - ttl, [])
+            self.content_store[label].last = self.content_store[label].at
+            data = await self.get(label, ttl, tpf, ttp)
+            accsig = encode(data)
+            accsig["sig"]  # TODO(v0.3): check accepted with validation
+            accsig["acc"]  # TODO(v0.3): check content
+            break
+        del self.groups[group].invites[client]
+
+    # TODO(comment)
+    async def join(self, group: str, client: str, key: str):
+
+        # Fetch the latest
+        async def get_invites():
+            while True:
+                label = group + "/" + client
+                ttl, tpf, ttp = 60, 6, 0.1  # TODO(adapt): parameterise these
+                self.content_store[label] = SetItem(
+                    label, None, time.time() - ttl, [])
+                self.content_store[label].last = self.content_store[label].at
+                getter = self.get(label, ttl, tpf, ttp)
+                invsig = decode(await getter)
+                inv = invsig["inv"]
+                sig = invsig["sig"]
+                if sig == "ok":  # TODO(v0.3): check signature against inv
+                    return inv
+
+        try:
+            invites = await asyncio.wait_for(get_invites(), timeout=60)
+            invite = invites[self.advert.client]
+        except asyncio.TimeoutError:
+            raise RuntimeError("Invite list not found")
+        except KeyError:
+            raise RuntimeError("Not in invite list")
+
+        # TODO(v0.3): decrypt with private key
+        invite = decode(self.private_key.decrypt(invite))
+
+        sig = self.private_key(invite["code"])  # TODO(v0.3): sign
+        accsig = {"acc": invite["code"], "sig": sig}
+
+        # TODO(v0.3): deserialise key
+        self.groups[group] = Group(invite["key"])
+
+        label = group + "/" + client + "/" + self.advert.client
+        self.set(label, encode(accsig))
 
     # Batching
 
