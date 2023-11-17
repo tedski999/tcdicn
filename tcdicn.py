@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import http
 import ipaddress
 import json
 import logging
@@ -608,6 +609,14 @@ class Node:
         task = asyncio.create_task(handle_invites())
         self.groups[group].tasks[client] = task
 
+    # Start a web server for visualising the state of this node
+    async def serve_debug(self, port: int):
+        server = await asyncio.start_server(
+            self.on_debug_connection, "0.0.0.0", port)
+        async with server:
+            self.log.info("Serving debug information on :%s", port)
+            await server.serve_forever()
+
     # Batching
 
     def schedule_batch_send(self):
@@ -818,6 +827,18 @@ class Node:
 
         # Handle message
         self.on_message(log, addr, data)
+
+    # Debug web server TCP connection entry point
+    async def on_debug_connection(self, reader: StreamReader, writer: StreamWriter):
+        addr = writer.get_extra_info("peername")[0:2]
+        log = ContextLogger(self.log, f"TCP {addr[0]}:{addr[1]}")
+        log.info("New debug connection")
+
+        # TODO: write html
+        resp = b'HTTP/1.1 200 OK\r\n\r\n<h1>hello</h1>\r\n\r\n\r\n'
+        writer.write(resp)
+
+        writer.close()
 
     # Common logic for handling both TCP and UDP messages
     def on_message(self, log: Logger, addr: Addr, data: bytes):
