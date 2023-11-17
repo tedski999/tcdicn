@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import ipaddress
 import json
 import logging
@@ -8,6 +9,10 @@ import socket
 import time
 from abc import ABC, abstractmethod
 from asyncio import Task, Future, DatagramTransport, StreamWriter, StreamReader
+from cryptography.exceptions import InvalidSignature
+from cryptography.fernet import Fernet, InvalidToken
+from cryptography.hazmat.primitives import serialization, hashes
+from cryptography.hazmat.primitives.asymmetric import rsa, padding
 from json import JSONDecodeError
 from logging import Logger, LoggerAdapter
 from typing import Dict, Tuple, List, Optional
@@ -57,6 +62,62 @@ def do_after(eol: float, callback) -> Task:
         callback()
 
     return asyncio.create_task(on_timeout())
+
+
+# Encode dict as bytes for transmission
+def encode(d: dict) -> bytes:
+    return json.dumps(d, separators=(",", ":")).encode()
+
+
+# Decode transmission bytes back to dict
+def decode(d: bytes) -> dict:
+    return json.loads(d)
+
+
+# Create a signature with a private key for some bytes
+def sign(key: rsa.RSAPrivateKey, data: bytes) -> bytes:
+    return key.sign(
+        data,
+        padding.PSS(
+            mgf=padding.MGF1(hashes.SHA256()),
+            salt_length=padding.PSS.MAX_LENGTH),
+        hashes.SHA256())
+
+
+# Check a signature of some bytes with a public key
+def verify(key: rsa.RSAPublicKey, sig: bytes, data: bytes) -> bool:
+    try:
+        key.verify(
+            sig,
+            data,
+            padding.PSS(
+                mgf=padding.MGF1(hashes.SHA256()),
+                salt_length=padding.PSS.MAX_LENGTH
+            ),
+            hashes.SHA256())
+        return True
+    except InvalidSignature:
+        return False
+
+
+# Encrypt some bytes with a public key
+def encrypt(key: rsa.RSAPublicKey, data: bytes) -> bytes:
+    return key.encrypt(
+        data,
+        padding.OAEP(
+            mgf=padding.MGF1(algorithm=hashes.SHA256()),
+            algorithm=hashes.SHA256(),
+            label=None))
+
+
+# Decrypt some bytes with a private key
+def decrypt(key: rsa.RSAPrivateKey, data: bytes) -> bytes:
+    return key.decrypt(
+        data,
+        padding.OAEP(
+            mgf=padding.MGF1(algorithm=hashes.SHA256()),
+            algorithm=hashes.SHA256(),
+            label=None))
 
 
 # Nodes communicate using messages which can be sent over TCP or UDP
@@ -211,10 +272,25 @@ class Message:
         return Message([t_map[item["t"]].from_dict(item) for item in d["i"]])
 
     def to_bytes(self) -> bytes:
-        return json.dumps(self.to_dict(), separators=(",", ":")).encode()
+        return encode(self.to_dict())
 
     def from_bytes(data: bytes):
-        return Message.from_dict(json.loads(data))
+        return Message.from_dict(decode(data))
+
+
+# Groups are defined by clients which possess the current group key
+# Clients create groups by having two clients who trust each other (PKC) join
+# A new group key is established if neither client has a group key
+# If both have a group key, the client with the older key accepts the newer
+class Group:
+    def __init__(self):
+        self.tasks: Dict[str, Task] = {}
+        self.labels: List[str] = []
+        self.encrypted_labels: List[str] = []
+        self.keys: Dict[str, rsa.RSAPublicKey] = {}
+        self.key: Fernet = None
+        self.raw: bytes = None
+        self.at: float = 0
 
 
 # Provides all the networking logic for interacting with a network of ICN nodes
@@ -237,10 +313,11 @@ class Node:
         self.log = logging.getLogger(__name__)
         self.peers: Dict[Addr, PeerItem] = {}  # IP>Peer info
         self.clients: Dict[str, AdvertItem] = {}  # ID>Client info
+        self.groups: Dict[str, Group] = {}  # Group name>Group info
         self.interests: Dict[str, Dict[str, GetItem]] = {}  # Label+ID>Interest
         self.routes: Dict[str, List[Dict]] = {}  # ID>Score+Route
         # TODO(optimisation): write to/read from disk
-        self.content_store: Dict[str, SetItem] = {}  # Label >data
+        self.content_store: Dict[str, SetItem] = {}  # Label>data
 
         self.batch_broadcast_task = None
         self.broadcast_queue = queue.PriorityQueue()
@@ -260,8 +337,13 @@ class Node:
         self.dport = dport
         self.is_main = (port == dport)
 
+        # If this is a client node, prepare the advert we regularly send
         self.advert = None if client is None else AdvertItem(
             client["name"], client["labels"], MAX_SCORE, client["ttp"], 0)
+
+        # Load private key if provided
+        self.key = None if client is None or "key" not in client else \
+            serialization.load_pem_private_key(client["key"], password=None)
 
         loop = asyncio.get_running_loop()
 
@@ -312,6 +394,9 @@ class Node:
             reg_task.cancel()
             self.udp.close()
             self.tcp.close()
+            for group in self.groups:
+                for task in self.groups[group].tasks.values():
+                    task.cancel()
 
         for sig in [signal.SIGHUP, signal.SIGTERM, signal.SIGINT]:
             loop.add_signal_handler(sig, shutdown)
@@ -329,10 +414,20 @@ class Node:
     # Subscribes to label and returns first new value received
     # Repeats request every TTL/TPF seconds until successful or cancelled
     # Allows each intermediate node to batch responses for up to TTP seconds
-    async def get(self, label: str, ttl: float, tpf: int, ttp: float) -> str:
+    async def get(
+            self, label: str, ttl: float, tpf: int, ttp: float,
+            group: Optional[str] = None) -> str:
         log = ContextLogger(self.log, f"get {label}")
         if self.advert is None:
             raise RuntimeError("Only client nodes can subscribe")
+
+        # Encrypt label
+        if group is not None:
+            # TODO(v0.3): stable label encryption
+            label = group + "//" + label
+            # label = self.groups[group].key.encrypt(label.encode())
+            # label = base64.b64encode(label).decode("ASCII")
+            log.debug("Used group %s key to encrypt label: %s", group, label)
 
         # Check if local content store already has a new value
         if label not in self.content_store:
@@ -368,24 +463,150 @@ class Node:
             assert await self.content_store[label].fulfil
             task.cancel()
 
+        # Grab new data and decrypt
         self.content_store[label].last = self.content_store[label].at
-        return self.content_store[label].data
+        data = self.content_store[label].data
+        if group is not None:
+            try:
+                data = base64.b64decode(data)
+                data = self.groups[group].key.decrypt(data).decode()
+                log.debug("Decrypted received data with group %s key", group)
+            except InvalidToken:
+                log.warning("Unable to decrypt group %s data", group)
+                data = self.get(label, ttl, tpf, ttp, group)
+        return data
 
     # Publishes a new value to a label
     # This will only be propagated towards interested clients
-    async def set(self, label: str, data: str):
+    async def set(self, label: str, data: str, group: Optional[str] = None):
         log = ContextLogger(self.log, f"set {label}")
-        log.info("Publishing...")
+        if self.advert is None:
+            raise RuntimeError("Only client nodes can publish")
+
+        # Encrypt label and data
+        if group is not None:
+            data = self.groups[group].key.encrypt(data.encode())
+            data = base64.b64encode(data).decode("ASCII")
+            # TODO(v0.3): stable label encryption
+            label = group + "//" + label
+            # label = self.groups[group].key.encrypt(label.encode())
+            # label = base64.b64encode(label).decode("ASCII")
+            log.debug("Used group key to encrypt label and data: %s", label)
+
         dst = []
         if label in self.interests:
             for get_item in self.interests[label].values():
                 dst.append((get_item.ttp, get_item.client))
-        else:
-            log.debug("Nobody is interested")
+
         self.on_set(log, SetItem(label, data, time.time(), dst))
         if self.is_send_queue_changed:
             self.schedule_batch_send()
             self.is_send_queue_changed = False
+
+    # Group encryption and authorisation
+    async def join(
+            self, group: str, client: str, key: bytes,
+            labels: List[str]) -> None:
+        log = ContextLogger(self.log, f"grp {group}/{client}")
+
+        # Let the network know that we now publish to "group/client"
+        if group not in self.groups:
+            self.advert.labels.append(group + "/" + self.advert.client)
+            self.groups[group] = Group()
+            self.groups[group].labels = labels
+
+        key = serialization.load_pem_public_key(key)
+
+        async def publish_invites():
+            log.debug("Publishing new invites...")
+
+            # Generate new invites
+            invites = {}
+            for client, key in self.groups[group].keys.items():
+                data = encrypt(key, self.groups[group].raw or b"")
+                invites[client] = base64.b64encode(data).decode("ASCII")
+
+            # Publish to group/client
+            inner = encode({"at": self.groups[group].at, "invites": invites})
+            data = base64.b64encode(inner).decode("ASCII")
+            sig = base64.b64encode(sign(self.key, inner)).decode("ASCII")
+            outer = encode({"d": data, "s": sig})
+            outer = base64.b64encode(outer).decode("ASCII")
+            await self.set(group + "/" + self.advert.client, outer)
+
+        async def handle_invite():
+
+            # Keep trying until we get a new group key
+            while True:
+                # TODO(adapt): parameterise these
+                ttl, tpf, ttp = 30, 2, 1
+
+                # Receive valid invites from group/client
+                outer = await self.get(group + "/" + client, ttl, tpf, ttp)
+                outer = decode(base64.b64decode(outer))
+                sig = base64.b64decode(outer["s"])
+                data = base64.b64decode(outer["d"])
+                if not verify(key, sig, data):
+                    log.warning("Ignored invite with bad signature")
+                    continue
+                inner = decode(data)
+
+                # If neither us nor they have a group key, create a new one
+                if inner["at"] == 0 and self.groups[group].at == 0:
+                    log.info("Generated new group key")
+                    self.groups[group].raw = Fernet.generate_key()
+                    self.groups[group].at = time.time()
+                    break
+
+                # Ignore if we have a newer group key, they need to receive
+                if inner["at"] == 0 or inner["at"] <= self.groups[group].at:
+                    log.debug("Ignored invite containing older key")
+                    continue
+
+                # Ignore if we are not on the list
+                invites = inner["invites"]
+                if self.advert.client not in invites:
+                    log.warning("Ignored invite not containing this client")
+                    continue
+                invite = base64.b64decode(invites[self.advert.client])
+
+                # Decrypt and accept the group key
+                log.info("Received new group key")
+                self.groups[group].raw = decrypt(self.key, invite)
+                self.groups[group].at = inner["at"]
+                break
+
+            # After obtaining a new group key, update our encrypted labels
+            self.groups[group].key = Fernet(self.groups[group].raw)
+            self.advert.labels = [
+                label for label in self.advert.labels
+                if label not in self.groups[group].encrypted_labels]
+            self.groups[group].encrypted_labels = []
+            for label in self.groups[group].labels:
+                # TODO(v0.3): stable label encryption
+                label = group + "//" + label
+                # label = self.groups[group].key.encrypt(label.encode()))
+                # label = base64.b64encode(label).decode("ASCII")
+                self.groups[group].encrypted_labels.append(label)
+            self.advert.labels.extend(self.groups[group].encrypted_labels)
+
+            # Then invite all trusted clients again
+            await publish_invites()
+
+        async def handle_invites():
+            while True:
+                await handle_invite()
+
+        # Publish and accept one invite to join the group
+        log.info("Joining group...")
+        self.groups[group].keys[client] = key
+        await publish_invites()
+        await handle_invite()
+        log.info("Joined group")
+
+        # Continuously accept and publish new invites in the background
+        task = asyncio.create_task(handle_invites())
+        self.groups[group].tasks[client] = task
 
     # Batching
 
@@ -780,8 +1001,6 @@ class Node:
 
     def on_set(self, log: Logger, s: SetItem):
         log = ContextLogger(log, f"set {s.label}@{s.at}")
-        if s.label not in self.interests:
-            log.warning("Received set for an unknown interest")
 
         # Check for previous content entry
         try:
