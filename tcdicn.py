@@ -834,9 +834,27 @@ class Node:
         log = ContextLogger(self.log, f"TCP {addr[0]}:{addr[1]}")
         log.info("New debug connection")
 
-        # TODO: write html
-        resp = b'HTTP/1.1 200 OK\r\n\r\n<h1>hello</h1>\r\n\r\n\r\n'
-        writer.write(resp)
+        writer.write(b"HTTP/1.1 200 OK\r\n\r\n")
+        writer.write(b"Node information\r\n")
+        writer.write((f"Listening port: {self.port}\r\n").encode())
+        writer.write((f"Discovery Port: {self.port}\r\n").encode())
+        if self.advert is not None:
+            writer.write((f"- Client name: {self.advert.client}\r\n").encode())
+            writer.write((f"- Published labels: {self.advert.labels}\r\n").encode())
+            writer.write((f"- Groups: {self.groups.key()}\r\n").encode())
+        writer.write(b"Known peers:\r\n")
+        for peer, info in self.peers.items():
+            writer.write((f"- {peer}: expires {to_human(info.eol)}\r\n").encode())
+        writer.write(b"Known clients:\r\n")
+        for client, info in self.clients.items():
+            writer.write((f"- {client}: publishes={info.labels}, my_score={info.score}, expires {to_human(info.eol)}\r\n").encode())
+        writer.write(b"Known routes:\r\n")
+        for client, info in self.routes.items():
+            if len(info) > 0:
+                writer.write((f"- {client}: peer={info[0]['addr']} score={info[0]['score']}\r\n").encode())
+        writer.write(b"Known interests:\r\n")
+        for label, info in self.interests.items():
+            writer.write((f"- {label}: clients={info.keys()}\r\n").encode())
 
         writer.close()
 
