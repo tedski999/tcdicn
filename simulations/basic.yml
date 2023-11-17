@@ -8,6 +8,7 @@ services:
       context: ..
       dockerfile_inline: |
         FROM python
+        RUN pip install cryptography
         COPY tcdicn.py examples/node.py .
         CMD python3 -c "import random, time; time.sleep(random.uniform(0, 5))"; exec python3 node.py
     environment:
@@ -15,6 +16,7 @@ services:
       TCDICN_DPORT: $TCDICN_DPORT
       TCDICN_TTL: $TCDICN_TTL
       TCDICN_TPF: $TCDICN_TPF
+      TCDICN_GROUP: $TCDICN_GROUP
       TCDICN_VERBOSITY: $TCDICN_VERBOSITY
 
   sensor:
@@ -22,6 +24,7 @@ services:
       context: ..
       dockerfile_inline: |
         FROM python
+        RUN pip install cryptography
         COPY tcdicn.py examples/sensor.py .
         CMD python3 -c "import random, time; time.sleep(random.uniform(0, 5))"; exec python3 sensor.py
     environment:
@@ -30,6 +33,7 @@ services:
       TCDICN_DPORT: $TCDICN_DPORT
       TCDICN_TTL: $TCDICN_TTL
       TCDICN_TPF: $TCDICN_TPF
+      TCDICN_GROUP: $TCDICN_GROUP
       TCDICN_VERBOSITY: $TCDICN_VERBOSITY
 
   actuator:
@@ -37,6 +41,7 @@ services:
       context: ..
       dockerfile_inline: |
         FROM python
+        RUN pip install cryptography
         COPY tcdicn.py examples/actuator.py .
         CMD python3 -c "import random, time; time.sleep(random.uniform(0, 5))"; exec python3 actuator.py
     environment:
@@ -46,6 +51,7 @@ services:
       TCDICN_TTL: $TCDICN_TTL
       TCDICN_TPF: $TCDICN_TPF
       TCDICN_TTP: $TCDICN_TTP
+      TCDICN_GROUP: $TCDICN_GROUP
       TCDICN_GET_TTL: $TCDICN_GET_TTL
       TCDICN_GET_TPF: $TCDICN_GET_TPF
       TCDICN_GET_TTP: $TCDICN_GET_TTP

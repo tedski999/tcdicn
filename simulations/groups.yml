@@ -1,0 +1,82 @@
+version: "3"
+name: "tcdicn-groups"
+
+services:
+
+  a-sensor:
+    extends:
+      file: basic.yml
+      service: sensor
+    networks: [ x ]
+    volumes:
+      - ../keys:/keys:ro
+    environment:
+      - TCDICN_ID=a-sensor
+      - TCDICN_GROUP=A
+      - TCDICN_KEYFILE=/keys/a-sensor.pem
+      - TCDICN_TRUSTEDS=/keys/a-actuator
+
+  a-actuator:
+    extends:
+      file: basic.yml
+      service: actuator
+    networks: [ y ]
+    volumes:
+      - ../keys:/keys:ro
+    environment:
+      - TCDICN_ID=a-actuator
+      - TCDICN_GROUP=A
+      - TCDICN_KEYFILE=/keys/a-actuator.pem
+      - TCDICN_TRUSTEDS=/keys/a-sensor
+
+  b-sensor:
+    extends:
+      file: basic.yml
+      service: sensor
+    networks: [ y ]
+    volumes:
+      - ../keys:/keys:ro
+    environment:
+      - TCDICN_ID=b-sensor
+      - TCDICN_GROUP=B
+      - TCDICN_KEYFILE=/keys/b-sensor.pem
+      - TCDICN_TRUSTEDS=/keys/b-actuator
+
+  b-actuator:
+    extends:
+      file: basic.yml
+      service: actuator
+    networks: [ x ]
+    volumes:
+      - ../keys:/keys:ro
+    environment:
+      - TCDICN_ID=b-actuator
+      - TCDICN_GROUP=B
+      - TCDICN_KEYFILE=/keys/b-actuator.pem
+      - TCDICN_TRUSTEDS=/keys/b-sensor
+
+  x:
+    extends:
+      file: basic.yml
+      service: node
+    networks: [ x, xy ]
+
+  y:
+    extends:
+      file: basic.yml
+      service: node
+    networks: [ y, xy ]
+
+networks:
+  x:
+    ipam:
+      config:
+        - subnet: 172.4.1.0/24
+  y:
+    ipam:
+      config:
+        - subnet: 172.4.2.0/24
+  xy:
+    ipam:
+      config:
+        - subnet: 172.4.3.0/24
