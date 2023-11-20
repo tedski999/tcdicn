@@ -12,7 +12,7 @@ async def main():
     name = os.getenv("TCDICN_ID")  # A unique name to call me on the network
     port = int(os.getenv("TCDICN_PORT") or 33333)  # Listen on :33333
     dport = int(os.getenv("TCDICN_DPORT") or port)  # Talk to :33333
-    wport = int(os.getenv("TCDICN_WPORT") or None)  # Debug web server port
+    wport = os.getenv("TCDICN_WPORT") or None  # Debug web server port
     ttl = float(os.getenv("TCDICN_TTL") or 30)  # Forget me after 30s
     tpf = int(os.getenv("TCDICN_TPF") or 3)  # Remind peers every 30/3s
     ttp = float(os.getenv("TCDICN_TTP") or 5)  # Repeat my adverts before 5s
@@ -91,7 +91,7 @@ async def main():
 
     # Serve debug information if requested
     if wport is not None:
-        debug_task = asyncio.create_task(node.serve_debug(wport))
+        debug_task = asyncio.create_task(node.serve_debug(int(wport)))
 
     # Run ICN node until shutdown while executing the actuator
     logging.info("Starting actuator...")

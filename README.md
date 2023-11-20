@@ -1,4 +1,4 @@
-Requires cryptography module.
+A generic, scalable, secure and reliable P2P ICN protocol implementation created as an common networking solution for many Project 3 teams in CS7NS1 Scalable Computing. Allows for interoperability between the PIs of different teams which can then collaborate to provide connectivity in highly disconnected environments. Requires the cryptography module. PKC keypairs must be generated 
 
 Assuming you have cloned the repository and are in the directory, run the example node implementation:
 
@@ -17,7 +17,7 @@ systemctl --user start tcdicn  # Start our service
 systemctl --user status tcdicn  # View service status
 ```
 
-To actually use the network, you need to implement your groups scenario's sensors and actuators as a tcdicn Node. Example sensor and actuator nodes have also been provided in `./examples``:
+To actually use the network, you need to implement your team's scenario's sensors and actuators as a tcdicn Node. Example sensor and actuator nodes have also been provided in `./examples``:
 
 ``` bash
 TCDICN_ID=my_cool_sensor PYTHONPATH=. python3 ./examples/sensor.py
@@ -26,7 +26,7 @@ TCDICN_ID=my_cool_actuator PYTHONPATH=. python3 ./examples/actuator.py
 
 Note that these "client" nodes should have unique names on the network, or you will significantly reduce the performance of the network.
 
-After instantiating a Node with `node = Node()`, Your sensors and actuators only need to care about 3 methods:
+After instantiating a Node with `node = Node()`, your sensors and actuators only need to care about 3 methods:
 - `await node.start(port: int, dport: int, ttl: float, tpf: float, client: dict = None)`: Starts the node networking servers and begins communicating with the network. Does not return until the server is shutdown (either press Ctrl+C, send a SIGINT to the process or cancel this coroutine in Python).
   - `port`: Which port to listen on for notifications, advertisements and TCP connections which send interests and data. Make sure this is accessable, as other nodes (potentially from other PIs) will try to contact this node using it.
   - `dport` (Discovery port): Which port is use by other nodes, which we send all of our notifications and advertisements to when broadcasting to discover each other. Most nodes should have this in common, but some nodes may set `port` differently if they want to run on the same device as another node (which is the "main" node on the device).
